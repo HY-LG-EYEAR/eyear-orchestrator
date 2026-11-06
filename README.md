@@ -1,72 +1,52 @@
-# LG-EYEAR-ai — Multimodal EYEAR Node Perception
+# EYEAR Agents and Home Orchestrator
 
-AI and sensing research repository for EYEAR, Hanyang University (CSE406 / ITE351, Fall 2026).
+Owner: **Jungbin Song** | Part of [EYEAR](https://github.com/HY-LG-EYEAR)
 
-> **Status:** Proposed pipeline and evaluation plan. Candidate models, available sensor data, and measured performance will be recorded as they are validated.
+> Status: repository scaffold and implementation plan. This upload kit does not contain runnable services, approved new contracts, trained models, or measured results. Preserve existing implementation files when adding this scaffold.
 
-## EYEAR Node Concept
+## Responsibility
 
-A proposed **EYEAR Node** is a room-level device with **camera + microphone + mmWave radar + local compute + secure communication**. Rather than running one large end-to-end multimodal model, it uses specialized local components:
+Implement Cleaning, Noise, Temperature, and Lighting agents; central arbitration; deterministic policy validation; plan/task state; voice-dialogue state; and inspectable decision traces.
 
-| Modality | Inputs | Candidate method | Structured outputs |
-| --- | --- | --- | --- |
-| Vision | Video frames | Pretrained person / pose detection; optional face embedding | Presence, tracks, posture, activity candidates, identity candidates |
-| Audio | Local audio | Voice Activity Detection; optional consented speaker embedding | Speech activity, registered speaker candidate, ambiguous/unknown |
-| mmWave | Radar measurements | Vendor target output + tracking/calibration | Target presence, position/range, motion/velocity |
-| Fusion | Timestamped modality outputs | Temporal alignment, calibration, association, confidence handling | Semantic Event for each observed target/room |
+Agents advise; only the central service approves commands. Direct commands take precedence over automatic plans without bypassing capability or authorization checks. Distinguish plan selection, dispatch acceptance and completed appliance work.
 
-Radar does **not** automatically identify people, detect through every wall, or reliably recognize fine posture. Continuous speech in a singly occupied room is not definitive evidence of a call or meeting; it may only support a `call_or_meeting_candidate` hypothesis.
+Use a shared input interface for live World Model and dummy scenarios. Keep the GPT provider behind an adapter; implement and label deterministic fallback/hold behavior. Model choice, new output schema, and lightweight learned scorers remain subject to evaluation. Do not describe the existing three-agent prototype as the completed four-agent system.
 
-## Research Tasks
+## Inputs and outputs
 
-1. **Pretrained-model baseline** — Run person, pose and optional face/voice embeddings without training foundation models from scratch.
-2. **Posture/activity classification** — Extract pose/ROI/temporal features; compare transparent rules against small classical classifiers if labeled data are available.
-3. **Radar integration** — Evaluate a compatible mmWave UART device such as HLK-LD2450 where available; parse time-stamped targets, not hypothetical through-wall or identity outputs.
-4. **Late fusion** — Compare camera-only, radar-only, and combined presence/position estimates, with synchronized timestamps and coordinate calibration.
-5. **Semantic Event Publisher** — Pass only structured observations to the central [LG-EYEAR system](https://github.com/HY-LG-EYEAR/LG-EYEAR).
-6. **Optional experiments** — Speaker verification, next-room prediction, learned activity recognition; only when data and time justify them.
+Consumes WorldSnapshot plus user directives/voice messages. Produces AgentProposal, validated decisions/commands, dialogue requests and traces. Reads actual execution feedback. Spring Boot owns app-facing persistence/APIs; it must not duplicate arbitration rules.
 
-## Datasets and Reproducibility
+The authoritative shared contract release is maintained in [LG-EYEAR/contracts](https://github.com/HY-LG-EYEAR/LG-EYEAR/tree/main/contracts). Coordinate changes with producers and consumers; do not create an incompatible local contract under the same version.
 
-- Public pose/activity references (e.g. COCO Keypoints, NTU RGB+D) are candidates; validate license, label mapping and sensor compatibility before use.
-- Record consented short scenarios for posture/activity classification and multi-node replay.
-- Store structured radar measurements and ground-truth annotations separately from inference outputs.
-- Split train/test by **recording session or participant**, not by randomly splitting adjacent video frames.
-- Report accuracy/F1, latency, resource use, position error, tracking stability and uncertainty.
+## Structure
 
-**Do not commit** personal face/voice recordings, biometric embeddings, raw household video, device credentials, or large model artifacts to public GitHub.
+| Path | Intended content |
+| --- | --- |
+| `src/` | Agents, feature extraction, arbitration, policy checks, task/dialogue state, provider and device adapters, API and trace. |
+| `datasets/generators/` | Agent-training generators using approved observed inputs; hidden simulator state may label outcomes but cannot leak into features. |
+| `datasets/configs/` | Generation settings, seeds, persona distributions and split specifications with versions. |
+| `datasets/samples/` | Small synthetic sample rows only; label their origin and contract version. |
+| `training/` | Offline fitting and model export. Reuse runtime feature extraction. |
+| `evaluation/` | Baseline comparison, held-out evaluation, error analysis and reproducible reports. |
+| `tests/` | Unit and contract tests for state transitions, invalid commands, fallbacks and duplicate events. |
 
-## Suggested Structure
+## Setup and execution status
 
-```text
-src/
-  vision/
-  audio/
-  radar/
-  fusion/
-  event_publisher/
-configs/
-experiments/
-  vision/
-  audio/
-  radar/
-  fusion/
-results/
-tests/
-datasets/README.md    # access rules and schema; no private raw media
-```
+This scaffold introduces no runtime dependencies or working launch commands. Preserve existing code. The owner must add the actual prerequisites, pinned dependency installation, configuration example, start/stop commands, and one verified smoke-test procedure before marking this repository runnable. Separate existing prototype instructions from the planned integrated system.
 
-## Integration Contract
+## Verification checklist
 
-```text
-sensor streams → specialized inference → late fusion
-→ timestamped Semantic Events → central context API
-```
+- [ ] Shared contract version and valid/invalid examples are identified.
+- [ ] Dependencies and OS/hardware versions are recorded.
+- [ ] A mock-input smoke test is reproducible.
+- [ ] Missing, stale, unknown and invalid input behavior is tested.
+- [ ] Integration with the next component is verified and exact commits are recorded.
+- [ ] Current limitations and measured results are documented without invented metrics.
 
-A Node processing failure should yield `unavailable` or `unknown` rather than a fabricated observation. Raw camera/audio data should not be passed to the central context interface.
+## Documentation
 
-## Evaluation and Course Materials
+- [Integration and scenarios](https://github.com/HY-LG-EYEAR/LG-EYEAR)
+- [CSE406 engineering document](https://github.com/HY-LG-EYEAR/LG-EYEAR-docs)
+- [ITE351 research blog](https://github.com/HY-LG-EYEAR/LG-EYEAR-blog)
 
-- [CSE406 documents / specification](https://github.com/HY-LG-EYEAR/LG-EYEAR-docs)
-- [ITE351 technical blog](https://github.com/HY-LG-EYEAR/LG-EYEAR-blog)
-- [Main backend + 3D simulator](https://github.com/HY-LG-EYEAR/LG-EYEAR)
+> Independent academic prototype. EYEAR is not an official LG Electronics product. The course prototype does not modify ThinQ ON firmware, integrate with the production ThinQ application, or control physical LG appliances.
