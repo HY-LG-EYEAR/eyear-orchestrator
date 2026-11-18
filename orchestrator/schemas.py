@@ -10,11 +10,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from orchestrator.contract import ActionName
 
@@ -138,29 +137,37 @@ class SpeakCommand(_M):
 
 
 class VoiceReply(BaseModel):
+    """Node schema 0.x와 호환되도록 모르는 필드는 무시하되, 값의 일관성은 검사한다."""
+
     model_config = ConfigDict(extra="ignore")
-    schema_version: str = "0.1"
+    schema_version: str = Field(default="0.1", pattern=r"^0\.\d+$")
     event_id: str | None = None
-    node_id: str
-    room_id: str
-    timestamp: datetime | None = None
+    node_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1)
+    timestamp: AwareDatetime | None = None
     type: Literal["VOICE_REPLY"] = "VOICE_REPLY"
-    command_id: str
+    command_id: str = Field(min_length=1)
     text: str | None
-    confidence: float | None
+    confidence: float | None = Field(ge=0.0, le=1.0)
     no_response: bool
+
+    @model_validator(mode="after")
+    def _no_response_consistent(self):
+        if self.no_response != (self.text is None) or (self.text is None) != (self.confidence is None):
+            raise ValueError("no_response면 text·confidence는 null, 아니면 둘 다 값이 있어야 함")
+        return self
 
 
 class VoiceCommand(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    schema_version: str = "0.1"
+    schema_version: str = Field(default="0.1", pattern=r"^0\.\d+$")
     event_id: str | None = None
-    node_id: str
-    room_id: str
-    timestamp: datetime | None = None
+    node_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1)
+    timestamp: AwareDatetime | None = None
     type: Literal["VOICE_COMMAND"] = "VOICE_COMMAND"
-    text: str
-    confidence: float
+    text: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 # ---------- 판단 기록 ----------

@@ -82,7 +82,13 @@ def main() -> None:
     samples = ROOT / "dataset" / "samples"
     samples.mkdir(parents=True, exist_ok=True)
     (ROOT / "models").mkdir(exist_ok=True)
+    import platform
+
+    import sklearn
+
     card = {"version": VERSION, "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "env": {"python": platform.python_version(), "scikit-learn": sklearn.__version__,
+                    "numpy": np.__version__, "joblib": joblib.__version__},
             "data": {"households": args.households, "days": args.days, "seed": args.seed,
                      "split": f"가구 0~{split - 1} 학습, {split}~{args.households - 1} 평가"},
             "agents": {}}

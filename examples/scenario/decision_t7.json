@@ -1,5 +1,5 @@
 {
-  "plan_id": "4adde9a2-dd1f-4492-aa82-3cdf5ea44cb4",
+  "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 120,
   "decided_at": "2026-11-13T22:56:10+09:00",
@@ -99,8 +99,8 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "bca78cc4-6831-440a-81ba-41157c25c59e",
-      "plan_id": "1794989267012511100",
+      "command_id": "43610775-c9c5-42f5-a0c1-c481e3bf868b",
+      "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
       "issued_at": "2026-11-13T22:56:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 120,
@@ -116,8 +116,8 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "384f9b43-21d2-435c-a40a-48a29950ab22",
-      "plan_id": "1794989267012511100",
+      "command_id": "917f71b8-94f1-412d-81d5-c47c1c2c1cc5",
+      "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
       "issued_at": "2026-11-13T22:56:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 120,

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from orchestrator.schemas import AgentProposal, ProposedAction, Question, Restri
 if TYPE_CHECKING:
     from orchestrator.voice import DialogueManager
 
+log = logging.getLogger(__name__)
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 DISTURB_P = 0.5      # 이 확률 이상이면 방해로 본다
 ASK_SLEEP_P = 0.3    # 수면 의도 확률이 이 이상이면 질문한다
@@ -54,15 +56,25 @@ def rule_sleep(row: dict) -> float:
 class Models:
     """models/*.joblib을 읽는다. 없으면 규칙을 쓴다."""
 
+    EXPECTED = {"cleaning": F.CLEAN_FEATURES, "noise": F.NOISE_FEATURES,
+                "temperature": F.TEMP_FEATURES, "lighting": F.LIGHT_FEATURES}
+
     def __init__(self, directory: Path | None = MODEL_DIR):
         self.m = {}
         if directory is not None:
             import joblib
 
-            for name in ("cleaning", "noise", "temperature", "lighting"):
+            for name, features in self.EXPECTED.items():
                 path = Path(directory) / f"{name}.joblib"
-                if path.exists():
-                    self.m[name] = joblib.load(path)
+                if not path.exists():
+                    continue
+                try:
+                    bundle = joblib.load(path)
+                    if bundle.get("features") != features:
+                        raise ValueError("특징 순서가 현재 코드와 다름")
+                    self.m[name] = bundle
+                except Exception as e:  # 깨진 파일, 버전 불일치 → 규칙으로 동작
+                    log.warning("모델 %s를 읽지 못해 규칙을 씁니다: %s", name, e)
 
     def name(self, agent: str) -> str:
         b = self.m.get(agent)
@@ -274,16 +286,17 @@ def lighting_agent(ctx: Context) -> AgentProposal:
             else:
                 out.reasons.append(f"SLEEP_UNLIKELY:{p.person_id}")
         elif ep.state == "ANSWERED" and ep.answer == "yes" and not ep.consumed:
-            ep.consumed = True
+            # 소비(consumed) 표시는 중앙이 실제로 처리한 뒤에 한다 (일시정지로 막히면 재개 후 다시 제안)
+            why = f"SLEEP_CONFIRMED:{p.person_id}"
             for d in s.devices:
                 if d.room_id != ep.room_id:
                     continue
                 if d.kind == "curtain":
                     out.actions.append(ProposedAction(device_id=d.device_id, action="set_curtain_position",
-                                                      params={"position_pct": 0}, reason="SLEEP_CONFIRMED"))
+                                                      params={"position_pct": 0}, reason=why))
                 if d.kind == "light":
                     out.actions.append(ProposedAction(device_id=d.device_id, action="set_power",
-                                                      params={"power": "off"}, reason="SLEEP_CONFIRMED"))
+                                                      params={"power": "off"}, reason=why))
     return out
 
 

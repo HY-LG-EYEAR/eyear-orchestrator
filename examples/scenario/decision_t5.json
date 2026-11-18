@@ -1,5 +1,5 @@
 {
-  "plan_id": "66e1509d-a199-4965-9d51-b3f608b1711c",
+  "plan_id": "9894f870-947a-4f81-acea-2317f92b3f81",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 115,
   "decided_at": "2026-11-13T22:50:05+09:00",
@@ -149,9 +149,9 @@
       "reason": "FALLBACK_RESPECT_RESTRICTIONS"
     }
   ],
-  "arbitration": "cached",
+  "arbitration": "fallback",
   "commands": [],
   "rejected": [],
   "speech": [],
-  "summary": "이전과 같은 충돌, 같은 선택 유지"
+  "summary": "LLM 없이 제한을 지키는 선택"
 }

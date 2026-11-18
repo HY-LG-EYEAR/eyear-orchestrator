@@ -1,5 +1,5 @@
 {
-  "plan_id": "35a60941-4a21-4d4c-9a9c-075b0a64a5d0",
+  "plan_id": "48a526aa-b515-45f6-9dc4-60d284f6b099",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 109,
   "decided_at": "2026-11-13T21:04:30+09:00",
@@ -163,7 +163,7 @@
   "speech": [
     {
       "schema_version": "0.1",
-      "command_id": "c7bf7805-97c6-411b-9202-fd7b56c55d66",
+      "command_id": "0f7f47b8-ee2a-4801-ae46-07c5409e406f",
       "timestamp": "2026-11-13T21:04:30+09:00",
       "text": "A님, 주무실 거면 '네'라고 말씀해 주세요.",
       "expect_reply": true,

@@ -1,5 +1,5 @@
 {
-  "plan_id": "690c6bbe-dc59-446a-804b-80d337d0bb84",
+  "plan_id": "2b231b68-783b-47f4-b6f4-6327b491c320",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 112,
   "decided_at": "2026-11-13T21:04:38+09:00",
@@ -153,5 +153,5 @@
   "commands": [],
   "rejected": [],
   "speech": [],
-  "summary": "이전과 같은 충돌, 같은 선택 유지"
+  "summary": "LLM 없이 제한을 지키는 선택"
 }

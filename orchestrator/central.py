@@ -6,8 +6,12 @@
 3. 충돌을 찾는다: 같은 기기·같은 동작에 다른 값, 또는 다른 에이전트의 제한(Restriction)에 걸리는 동작.
 4. 충돌하지 않는 제안은 그대로 수용한다.
 5. 충돌마다 선택지를 기계적으로 만들고, LLM이 하나를 고른다. LLM이 없거나 실패하면 결정적 fallback.
-6. 수용한 동작을 검증(기기 능력·범위·수동 조작·사용자 금지·중복)한 뒤 명령으로 보낸다.
+   같은 충돌·같은 상황(마감 구간, 점수 구간)이면 일정 시간 동안 앞의 선택을 재사용한다.
+6. 수용한 동작을 검증(기기 능력·범위·상태 신선도·수동 조작·사용자 금지·중복)한 뒤 명령으로 보낸다.
 7. 빛 에이전트가 질문을 요청하면 Node로 말할 문장을 보낸다.
+
+일시정지(pause)는 자동 제어만 멈춘다. 사람이 직접 말한 명령("불 켜줘")은 일시정지 중에도 실행한다.
+LLM 호출은 lock 밖에서 하고, 응답 후 더 새로운 스냅샷이 와 있으면 최신 상태로 다시 계산한다.
 """
 
 from __future__ import annotations
@@ -16,7 +20,9 @@ import json
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -32,7 +38,10 @@ from orchestrator.voice import DialogueManager, LISTEN_SECONDS, parse_command, q
 
 log = logging.getLogger(__name__)
 
-MANUAL_HOLD = timedelta(minutes=30)  # 직접 명령 뒤 같은 기기를 자동으로 되돌리지 않는 시간
+MANUAL_HOLD = timedelta(minutes=30)   # 직접 명령 뒤 같은 기기를 자동으로 되돌리지 않는 시간
+MEMO_TTL = timedelta(minutes=15)      # 같은 충돌의 선택을 재사용하는 최대 시간 (스냅샷 시각 기준)
+PENDING_TIMEOUT_S = 60.0              # 결과가 이 시간 안에 안 오면 명령을 유실로 보고 다시 보낼 수 있게 함
+TERMINAL = {"completed", "failed", "rejected"}
 
 
 # ---------- 검증 ----------
@@ -46,6 +55,8 @@ def validate(a: ProposedAction, snap: WorldSnapshot) -> str | None:
         return "DEVICE_NOT_ONLINE"
     if d.manual_override is True:
         return "MANUAL_OVERRIDE"
+    if d.evidence.freshness != "current":
+        return "DEVICE_STATE_STALE"
     caps, p = d.capabilities, a.params
     if a.action not in caps.actions:
         return "ACTION_NOT_SUPPORTED"
@@ -103,7 +114,11 @@ def already_done(a: ProposedAction, snap: WorldSnapshot) -> bool:
 # ---------- 충돌과 선택지 ----------
 
 def find_conflicts(proposals: list[AgentProposal], snap: WorldSnapshot):
-    """(충돌 없는 동작들, 충돌 목록)"""
+    """(충돌 없는 동작들, 충돌 목록)
+
+    현재 범위: 같은 (기기, 동작)에 서로 다른 값, 그리고 청소 시작과 소음 제한의 겹침.
+    동작 이름이 다른 조합(예: start_cleaning과 return_to_dock)은 아직 충돌로 보지 않는다.
+    """
     by_key: dict[tuple, list[tuple[str, ProposedAction]]] = defaultdict(list)
     for prop in proposals:
         for a in prop.actions:
@@ -196,14 +211,40 @@ def summarize(snap: WorldSnapshot, proposals: list[AgentProposal]) -> dict:
     }
 
 
+def _deadline_bucket(snap: WorldSnapshot) -> list:
+    out = []
+    for r in snap.routines:
+        if not r.due or r.deadline_at is None:
+            out.append((r.occurrence_id, r.due, None))
+            continue
+        left = (r.deadline_at - snap.as_of).total_seconds() / 60
+        out.append((r.occurrence_id, r.due, "overdue" if left < 0 else "<30m" if left < 30 else "<60m" if left < 60 else "later"))
+    return out
+
+
+def memo_key(c: Conflict, snap: WorldSnapshot, proposals: list[AgentProposal]) -> str:
+    """같은 충돌이라도 마감 구간, 관련 점수 구간, 사용자 금지가 다르면 다른 상황으로 본다."""
+    scores = {k: round(v * 4) / 4 for p in proposals for k, v in p.scores.items()
+              if k.startswith(("urgency:", "disturb:"))}
+    return json.dumps({"conflict": c.model_dump(), "deadline": _deadline_bucket(snap), "scores": scores,
+                       "restrictions": [u.model_dump(mode="json") for u in snap.user_restrictions]},
+                      sort_keys=True, default=str)
+
+
 def decision_key(snap: WorldSnapshot) -> str:
-    """판단에 영향을 주는 값만. 같으면 다시 판단하지 않는다(heartbeat, stable_for_s 증가 등)."""
+    """판단에 영향을 주는 값만. 같으면 다시 판단하지 않는다(heartbeat, stable_for_s 증가 등).
+    온도는 0.5°C 단위, 근거는 신선도 상태만 본다."""
+    def temp(m):
+        return None if m.value is None else round(m.value * 2) / 2
     return json.dumps({
-        "rooms": [(r.room_id, r.occupancy.state, r.light.level) for r in snap.rooms],
-        "people": [(p.person_id, p.room_id, p.activity.label, p.activity.confirmed, p.position is not None)
-                   for p in snap.people],
-        "devices": [(d.device_id, d.online, d.manual_override, d.state.model_dump()) for d in snap.devices],
+        "rooms": [(r.room_id, r.occupancy.state, r.occupancy.evidence.freshness, r.light.level,
+                   temp(r.temperature_c), r.temperature_c.evidence.freshness) for r in snap.rooms],
+        "people": [(p.person_id, p.room_id, p.activity.label, p.activity.confirmed, p.position is not None,
+                    p.evidence.freshness) for p in snap.people],
+        "devices": [(d.device_id, d.online, d.manual_override, d.evidence.freshness, d.state.model_dump())
+                    for d in snap.devices],
         "routines": [(r.occurrence_id, r.due, r.room_ids) for r in snap.routines],
+        "deadline": _deadline_bucket(snap),
         "profiles": [p.model_dump() for p in snap.profiles],
         "restrictions": [u.model_dump(mode="json") for u in snap.user_restrictions],
         "influence": snap.room_influence,
@@ -211,6 +252,32 @@ def decision_key(snap: WorldSnapshot) -> str:
 
 
 # ---------- 중앙 ----------
+
+@dataclass
+class Memo:
+    choice: Choice
+    mode: str            # llm | fallback
+    summary: str
+    expires_at: datetime
+
+
+@dataclass
+class Pending:
+    cmd: DeviceCommand
+    sent_at: float
+    status: str = "sent"
+
+
+@dataclass
+class Plan:
+    snap: WorldSnapshot
+    proposals: list[AgentProposal]
+    accepted: list[ProposedAction]
+    conflicts: list[Conflict]
+    keys: dict[str, str]
+    rejected: list[Rejected] = field(default_factory=list)
+    sleep_people: set[str] = field(default_factory=set)  # 수면 확인 뒤 조명·커튼을 제안받은 사람
+
 
 class Orchestrator:
     def __init__(self, send_command: Callable[[DeviceCommand], None],
@@ -234,9 +301,9 @@ class Orchestrator:
             self.hist = History()
             self.dialogue = DialogueManager()
             self.protected: dict[str, set[str]] = {}
-            self.pending: dict[str, DeviceCommand] = {}
+            self.pending: dict[str, Pending] = {}
             self.holds: dict[str, datetime] = {}
-            self.memo: dict[str, Choice] = {}
+            self.memo: dict[str, Memo] = {}
             self.last_key: str | None = None
             self.paused = False
 
@@ -247,7 +314,7 @@ class Orchestrator:
                 "world_revision": self.snap.world_revision if self.snap else None,
                 "llm": bool(self.llm), "models": {a: self.models.name(a) for a in
                                                  ("cleaning", "noise", "temperature", "lighting")},
-                "pending_commands": len(self.pending),
+                "pending_commands": {k: p.status for k, p in self.pending.items()},
                 "episodes": {k: vars(v) for k, v in self.dialogue.episodes.items()},
             }
 
@@ -255,6 +322,11 @@ class Orchestrator:
 
     def on_snapshot(self, snap: WorldSnapshot) -> Decision | None:
         with self.lock:
+            cur = self.snap
+            if cur is not None and cur.world_session_id == snap.world_session_id \
+                    and snap.world_revision <= cur.world_revision:
+                log.info("옛 스냅샷 무시: rev %s (현재 %s)", snap.world_revision, cur.world_revision)
+                return None
             self.hist.observe(snap)
             self.dialogue.update(snap)
             self.snap = snap
@@ -262,21 +334,29 @@ class Orchestrator:
             if key == self.last_key:
                 return None
             self.last_key = key
-            return self.decide("snapshot")
+        return self.decide("snapshot")
 
     def on_voice_reply(self, reply: VoiceReply) -> Decision | None:
         with self.lock:
+            if self.snap is None:
+                return None
             ep = self.dialogue.on_reply(reply, self.clock())
-            if ep is None or self.snap is None:
+            if ep is None:
                 return None
             self.last_key = None
-            return self.decide(f"voice_reply:{ep.answer}")
+        return self.decide(f"voice_reply:{ep.answer}")
 
     def on_voice_command(self, cmd: VoiceCommand) -> Decision | None:
+        """직접 명령. 일시정지 중에도 실행한다(일시정지는 자동 제어만 멈춤)."""
         with self.lock:
             if self.snap is None:
                 return None
-            snap, parsed = self.snap, parse_command(cmd.text)
+            snap = self.snap
+            node = snap.node_for_room(cmd.room_id)
+            if node is None or node.node_id != cmd.node_id:
+                log.warning("등록되지 않은 Node의 명령 무시: %s@%s", cmd.node_id, cmd.room_id)
+                return None
+            parsed = parse_command(cmd.text)
             accepted, rejected, speech = [], [], []
             if parsed is None:
                 speech.append(self._say(cmd.room_id, "죄송해요, 잘 알아듣지 못했어요.", False))
@@ -295,22 +375,33 @@ class Orchestrator:
                         accepted.append(a)
                         self.holds[dev.device_id] = snap.as_of + MANUAL_HOLD
                         speech.append(self._say(cmd.room_id, ack, False))
-            commands = self._dispatch(accepted, snap, ["DIRECT_COMMAND"])
-            return self._record(snap, f"voice_command:{cmd.text}", [], accepted, [], [], "none",
+            plan_id = str(uuid.uuid4())
+            commands = self._dispatch(accepted, snap, plan_id, ["DIRECT_COMMAND"])
+            return self._record(plan_id, snap, f"voice_command:{cmd.text}", [], accepted, [], [], "none",
                                 commands, rejected, speech, "직접 명령은 자동 계획보다 우선")
 
     def on_device_result(self, res: DeviceResult) -> None:
         with self.lock:
-            cmd = self.pending.pop(res.command_id, None)
-            if cmd is None or res.status != "completed" or self.snap is None:
+            p = self.pending.get(res.command_id)
+            if p is None:
                 return
-            if cmd.action == "start_cleaning":
-                occ = next((r.occurrence_id for r in self.snap.routines if r.device_id == cmd.device_id and r.due), None)
-                for room_id in cmd.params.get("room_ids", []):
+            if p.cmd.device_id != res.device_id or p.cmd.world_session_id != res.world_session_id:
+                log.warning("명령과 맞지 않는 결과 무시: %s", res.command_id)
+                return
+            if res.status not in TERMINAL:   # accepted: 아직 진행 중
+                p.status = res.status
+                return
+            self.pending.pop(res.command_id)
+            if res.status != "completed" or self.snap is None:
+                return
+            if p.cmd.action == "start_cleaning":
+                occ = next((r.occurrence_id for r in self.snap.routines if r.device_id == p.cmd.device_id and r.due), None)
+                for room_id in p.cmd.params.get("room_ids", []):
                     self.hist.mark_cleaned(room_id, res.timestamp, occ)
 
     def tick(self) -> list[str]:
         with self.lock:
+            self._expire_pending()
             return [ep.person_id for ep in self.dialogue.check_deadlines(self.clock())]
 
     def control(self, action: str) -> None:
@@ -324,11 +415,38 @@ class Orchestrator:
 
     # ----- 판단 -----
 
-    def decide(self, trigger: str) -> Decision:
+    def decide(self, trigger: str) -> Decision | None:
+        """충돌이 새 상황이면 LLM을 lock 밖에서 부르고, 그 사이 상태가 바뀌었으면 최신 상태로 다시 계산한다."""
+        fresh: dict[str, str] = {}
+        for _ in range(3):
+            with self.lock:
+                if self.snap is None:
+                    return None
+                plan = self._prepare()
+                missing = [c for c in plan.conflicts if self._memo_get(plan.keys[c.conflict_id], plan.snap) is None]
+                if not missing:
+                    return self._finish(plan, trigger, fresh)
+                if self.llm is None:
+                    self._remember(missing, plan, None, fresh)
+                    return self._finish(plan, trigger, fresh)
+                rev, context = plan.snap.world_revision, summarize(plan.snap, plan.proposals)
+            sel = self.llm.select(context, missing)
+            with self.lock:
+                self._remember(missing, plan, sel if sel and self._valid_selection(sel, missing) else None, fresh)
+                if self.snap.world_revision == rev:
+                    return self._finish(plan, trigger, fresh)
+        with self.lock:   # 계속 바뀌면 마지막 상태로 fallback
+            plan = self._prepare()
+            self._remember([c for c in plan.conflicts
+                            if self._memo_get(plan.keys[c.conflict_id], plan.snap) is None], plan, None, fresh)
+            return self._finish(plan, trigger, fresh)
+
+    def _prepare(self) -> Plan:
         snap = self.snap
         ctx = A.Context(snap, self.hist, self.models, self.dialogue, self.protected)
         proposals = [agent(ctx) for agent in A.AGENTS]
-
+        sleep_people = {a.reason.split(":", 1)[1] for p in proposals for a in p.actions
+                        if a.reason.startswith("SLEEP_CONFIRMED:")}
         rejected: list[Rejected] = []
         for p in proposals:
             kept = []
@@ -341,60 +459,77 @@ class Orchestrator:
                     continue
                 kept.append(a)
             p.actions[:] = kept
-
         accepted, conflicts = find_conflicts(proposals, snap)
-        choices, arbitration, summary = self._arbitrate(snap, proposals, conflicts)
-        chosen = {c.conflict_id: c.option_id for c in choices}
-        for c in conflicts:
-            opt = next(o for o in c.options if o.option_id == chosen[c.conflict_id])
-            accepted.extend(opt.actions)
+        keys = {c.conflict_id: memo_key(c, snap, proposals) for c in conflicts}
+        return Plan(snap, proposals, accepted, conflicts, keys, rejected, sleep_people)
 
+    def _memo_get(self, key: str, snap: WorldSnapshot) -> Memo | None:
+        m = self.memo.get(key)
+        if m is not None and snap.as_of >= m.expires_at:
+            self.memo.pop(key)
+            return None
+        return m
+
+    def _remember(self, conflicts, plan: Plan, sel, fresh: dict[str, str]) -> None:
+        got = {c.conflict_id: c for c in sel.choices} if sel else {}
+        for c in conflicts:
+            key = plan.keys[c.conflict_id]
+            if c.conflict_id in got:
+                self.memo[key] = Memo(got[c.conflict_id], "llm", sel.summary, plan.snap.as_of + MEMO_TTL)
+            else:
+                summary = "LLM 응답 없음 또는 형식 오류 → 결정적 선택" if self.llm else "LLM 없이 제한을 지키는 선택"
+                self.memo[key] = Memo(fallback_choice(c), "fallback", summary, plan.snap.as_of + MEMO_TTL)
+            fresh[key] = self.memo[key].mode
+
+    def _finish(self, plan: Plan, trigger: str, fresh: dict[str, str]) -> Decision:
+        snap, proposals, rejected = plan.snap, plan.proposals, list(plan.rejected)
+        accepted = list(plan.accepted)
+        choices, modes, summaries = [], set(), []
+        for c in plan.conflicts:
+            key = plan.keys[c.conflict_id]
+            m = self._memo_get(key, snap)
+            choices.append(m.choice)
+            modes.add(fresh.get(key, "cached"))
+            summaries.append(m.summary)
+            opt = next(o for o in c.options if o.option_id == m.choice.option_id)
+            accepted.extend(opt.actions)
+        arbitration = "none" if not modes else ("llm" if "llm" in modes else "fallback" if "fallback" in modes else "cached")
+
+        self._expire_pending()
         valid = []
         for a in accepted:
             reason = validate(a, snap)
             if reason:
                 rejected.append(Rejected(action=a, reason=reason))
-            elif any(p.device_id == a.device_id and p.action == a.action and p.params == a.params
+            elif any(p.cmd.device_id == a.device_id and p.cmd.action == a.action and p.cmd.params == a.params
                      for p in self.pending.values()):
                 rejected.append(Rejected(action=a, reason="DUPLICATE_PENDING"))
             else:
                 valid.append(a)
-
         if self.paused:
             rejected += [Rejected(action=a, reason="PAUSED") for a in valid]
             valid = []
-        commands = self._dispatch(valid, snap, [trigger])
+        plan_id = str(uuid.uuid4())
+        commands = self._dispatch(valid, snap, plan_id, [trigger])
+
+        # 수면 확인 뒤의 조명·커튼 제안은 일시정지로 막혔을 때만 다시 시도하고, 그 외에는 한 번으로 끝낸다
+        if not self.paused:
+            for pid in plan.sleep_people:
+                ep = self.dialogue.episode(pid)
+                if ep:
+                    ep.consumed = True
 
         speech = []
         for p in proposals:
             for q in p.questions:
                 if self.paused or self.dialogue.awaiting_in_room(q.room_id):
                     continue
-                person = snap.person(q.person_id)
+                person, node = snap.person(q.person_id), snap.node_for_room(q.room_id)
                 cmd = self._say(q.room_id, question_text(person.identity), True)
-                self.dialogue.asked(q.person_id, cmd.command_id, self.clock(), cmd.text)
+                self.dialogue.asked(q.person_id, cmd.command_id, self.clock(), cmd.text, node.node_id)
                 speech.append(cmd)
-        return self._record(snap, trigger, proposals, accepted, conflicts, choices, arbitration,
-                            commands, rejected, speech, summary)
-
-    def _arbitrate(self, snap, proposals, conflicts):
-        if not conflicts:
-            return [], "none", ""
-        sig = {c.conflict_id: json.dumps(c.model_dump(), sort_keys=True) for c in conflicts}
-        if all(sig[c.conflict_id] in self.memo for c in conflicts):
-            return [self.memo[sig[c.conflict_id]] for c in conflicts], "cached", "이전과 같은 충돌, 같은 선택 유지"
-        choices, arbitration, summary = None, "fallback", "LLM 없이 제한을 지키는 선택"
-        if self.llm is not None:
-            sel = self.llm.select(summarize(snap, proposals), conflicts)
-            if sel is not None and self._valid_selection(sel, conflicts):
-                choices, arbitration, summary = sel.choices, "llm", sel.summary
-            else:
-                summary = "LLM 응답 없음 또는 형식 오류 → 결정적 선택"
-        if choices is None:
-            choices = [fallback_choice(c) for c in conflicts]
-        for c in choices:
-            self.memo[sig[c.conflict_id]] = c
-        return choices, arbitration, summary
+        return self._record(plan_id, snap, trigger, proposals, accepted, plan.conflicts, choices, arbitration,
+                            commands, rejected, speech, " / ".join(dict.fromkeys(summaries)))
 
     @staticmethod
     def _valid_selection(sel, conflicts) -> bool:
@@ -402,14 +537,20 @@ class Orchestrator:
         got = {c.conflict_id: c.option_id for c in sel.choices}
         return set(got) == set(want) and all(got[k] in want[k] for k in want)
 
-    def _dispatch(self, actions, snap, reasons) -> list[DeviceCommand]:
+    def _expire_pending(self) -> None:
+        now = self.clock()
+        for cid, p in list(self.pending.items()):
+            if now - p.sent_at > PENDING_TIMEOUT_S:
+                log.warning("결과가 오지 않은 명령을 유실로 처리: %s %s", p.cmd.device_id, p.cmd.action)
+                self.pending.pop(cid)
+
+    def _dispatch(self, actions, snap, plan_id: str, reasons) -> list[DeviceCommand]:
         commands = []
-        plan_id = str(time.time_ns())
         for a in actions:
             cmd = DeviceCommand(plan_id=plan_id, issued_at=snap.as_of, world_session_id=snap.world_session_id,
                                 based_on_revision=snap.world_revision, device_id=a.device_id, action=a.action,
                                 params=a.params, reason_codes=[a.reason] + reasons)
-            self.pending[cmd.command_id] = cmd
+            self.pending[cmd.command_id] = Pending(cmd, self.clock())
             commands.append(cmd)
         for cmd in commands:
             try:
@@ -427,9 +568,9 @@ class Orchestrator:
             log.error("음성 전송 실패 %s: %s", room_id, e)
         return cmd
 
-    def _record(self, snap, trigger, proposals, accepted, conflicts, choices, arbitration,
+    def _record(self, plan_id, snap, trigger, proposals, accepted, conflicts, choices, arbitration,
                 commands, rejected, speech, summary) -> Decision:
-        d = Decision(world_session_id=snap.world_session_id, world_revision=snap.world_revision,
+        d = Decision(plan_id=plan_id, world_session_id=snap.world_session_id, world_revision=snap.world_revision,
                      decided_at=snap.as_of, trigger=trigger, proposals=proposals, accepted=accepted,
                      conflicts=conflicts, choices=choices, arbitration=arbitration, commands=commands,
                      rejected=rejected, speech=speech, summary=summary)

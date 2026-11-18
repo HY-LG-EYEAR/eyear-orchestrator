@@ -19,8 +19,16 @@ Device adapter ──execution result──▶ World Model ──(HTTP)──▶
 1. All four agents read the same snapshot and make proposals. Agents never send commands themselves.
 2. **Proposals that do not conflict are accepted as they are.**
 3. A conflict is a different value proposed for the same device, or an action blocked by another agent's restriction. For each conflict, the options are built mechanically and **the LLM chooses one of them.** The LLM cannot create new commands.
-4. If the LLM is unavailable or fails, a deterministic fallback chooses the option that respects the restrictions. When the same conflict continues, the earlier choice is reused.
-5. Every command is validated before it is sent: supported action and mode, temperature range and step, manual override, online state, user restrictions, and duplicates.
+4. If the LLM is unavailable or fails, a deterministic fallback chooses the option that respects the restrictions. A choice is reused for up to 15 minutes while the same conflict continues under the same situation (deadline band, agent score band, user restrictions).
+5. Every command is validated before it is sent: supported action and mode, temperature range and step, fresh device state, online state, manual override, user restrictions, and duplicates of commands still in progress.
+
+Notes
+- **Pause** stops automatic control only. A command the resident speaks directly ("하이 엘지, 불 켜줘") is still carried out.
+- The LLM is called outside the Orchestrator's lock. If a newer snapshot arrives while waiting for the LLM, the decision is recomputed on the newest state.
+- Snapshots older than the current `world_revision` of the same session are ignored.
+- A command stays pending until a final result (`completed`, `failed`, or `rejected`) arrives for the same session and device; `accepted` keeps it pending. Without a result for 60 seconds it is treated as lost and may be sent again.
+- Conflict detection currently covers different values for the same device and action, and cleaning rooms blocked by a noise restriction. Other combinations (for example `start_cleaning` vs. `return_to_dock`) are not yet detected.
+- Sleep questions are accepted only from the Node and room the question was sent to.
 
 ## Values read from the World Model (per agent)
 
@@ -39,12 +47,12 @@ All models use scikit-learn. Each model file is a few KB to about 200 KB and run
 
 | Agent | What the model predicts | Chosen model | Other candidates compared | How it is used |
 |---|---|---|---|---|
-| Cleaning | Cleaning need per room, 0–1 | HistGradientBoosting regression | Ridge, rule | Evidence the LLM sees in a conflict (`urgency:room`) |
+| Cleaning | Cleaning need per room, 0–1 (trained on the simulator's hidden dust level; not a measured contamination value) | HistGradientBoosting regression | Ridge, rule | Evidence the LLM sees in a conflict (`urgency:room`). The cleaning order itself comes from the routine |
 | Noise | Disturbance probability per (device mode, room) | Logistic regression | HistGradientBoosting, rule | 0.5 or higher → propose low-noise mode for the washer or purifier |
 | Temperature | Thermal sensation (+ too warm / − too cool) per (person, set temperature) | Ridge regression | HistGradientBoosting, rule | Set temperature that minimizes the sum of squared sensations of the people in the room |
 | Lighting | Sleep-intent probability of a resting person | Logistic regression | HistGradientBoosting, rule | 0.3 or higher → ask whether the person is going to sleep |
 
-Training data comes from a household simulator ([`dataset/simulate.py`](dataset/simulate.py)). It builds the same WorldSnapshot objects and uses the same feature functions ([`orchestrator/features.py`](orchestrator/features.py)) as the running service, and labels come only from the simulator's hidden state. Evaluation is split by household. Metrics are in [`models/model_card.json`](models/model_card.json). **These are simulated data, so the metrics do not indicate accuracy in a real home.**
+Training data comes from a household simulator ([`dataset/simulate.py`](dataset/simulate.py)). It builds the same WorldSnapshot objects and uses the same feature functions ([`orchestrator/features.py`](orchestrator/features.py)) as the running service, and labels come only from the simulator's hidden state. Rows are taken every 15 simulated minutes. Evaluation is a household-level split (train / test, no separate validation set), and the adopted candidate is fixed in `dataset/train.py`. Metrics and library versions are in [`models/model_card.json`](models/model_card.json). **These are simulated data, so the metrics do not indicate accuracy in a real home.** A model file that is broken or was trained with a different feature order is ignored, and the agent falls back to its rule.
 
 ## Output formats
 
@@ -105,5 +113,6 @@ tests/
 ## Not decided yet
 
 - Agreement on World Model contract v2.1 (session registration, device command and result routes, `stable_since`, etc.)
-- Control and display formats exchanged with the app (Spring Boot)
+- Control and display formats exchanged with the app (Expo app, Spring Boot backend)
+- Authentication for the HTTP API and MQTT (required before deploying beyond a local network)
 - MQTT broker location for the demo, and where the server is deployed (local or cloud)

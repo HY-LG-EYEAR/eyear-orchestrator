@@ -59,7 +59,8 @@ class Episode:
     command_id: str | None = None
     deadline: float | None = None
     answer: str | None = None         # yes | no | ambiguous
-    consumed: bool = False            # 긍정 대답에 따른 조명·커튼 제안을 이미 냈는가
+    consumed: bool = False            # 긍정 대답에 따른 조명·커튼 제안을 중앙이 처리했는가
+    node_id: str | None = None        # 질문을 보낸 Node. 대답은 이 Node·방에서 온 것만 받는다
 
 
 class DialogueManager:
@@ -96,9 +97,9 @@ class DialogueManager:
         self.log.append(f"episode end {ep.person_id} ({why}, state={ep.state})")
         self.episodes.pop(ep.person_id, None)
 
-    def asked(self, person_id: str, command_id: str, now: float, text: str) -> None:
+    def asked(self, person_id: str, command_id: str, now: float, text: str, node_id: str | None = None) -> None:
         ep = self.episodes[person_id]
-        ep.state, ep.command_id = "AWAITING_REPLY", command_id
+        ep.state, ep.command_id, ep.node_id = "AWAITING_REPLY", command_id, node_id
         ep.deadline = now + speech_seconds(text) + LISTEN_SECONDS + REPLY_MARGIN_S
 
     def awaiting_in_room(self, room_id: str) -> bool:
@@ -108,6 +109,9 @@ class DialogueManager:
         ep = next((e for e in self.episodes.values() if e.command_id == reply.command_id), None)
         if ep is None or ep.state != "AWAITING_REPLY":
             self.log.append(f"reply ignored (unknown or obsolete command {reply.command_id})")
+            return None
+        if reply.room_id != ep.room_id or (ep.node_id is not None and reply.node_id != ep.node_id):
+            self.log.append(f"reply ignored (from {reply.node_id}@{reply.room_id}, asked {ep.node_id}@{ep.room_id})")
             return None
         if ep.deadline is not None and now > ep.deadline + 1.0:
             ep.state = "EXPIRED"

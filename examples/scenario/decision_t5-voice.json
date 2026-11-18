@@ -1,5 +1,5 @@
 {
-  "plan_id": "cb07e2ba-ee72-4a70-835f-3f7232bcfeac",
+  "plan_id": "62586ed8-9de5-4e25-b14c-cb8baa04cf06",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 113,
   "decided_at": "2026-11-13T21:40:00+09:00",
@@ -21,8 +21,8 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "6a099b43-cc1c-4d86-b356-b00714e21b1d",
-      "plan_id": "1794989266130640500",
+      "command_id": "cb1d11ea-448a-4c31-906d-c1a8c4ec175b",
+      "plan_id": "62586ed8-9de5-4e25-b14c-cb8baa04cf06",
       "issued_at": "2026-11-13T21:40:00+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 113,
@@ -41,7 +41,7 @@
   "speech": [
     {
       "schema_version": "0.1",
-      "command_id": "6b2d911b-2dc9-4aef-ae87-08bba4d02c7b",
+      "command_id": "adbb7bc4-c496-4765-8741-a82b0222df76",
       "timestamp": "2026-11-13T21:40:00+09:00",
       "text": "네, 불을 켤게요.",
       "expect_reply": false,

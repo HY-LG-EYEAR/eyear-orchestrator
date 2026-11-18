@@ -1,5 +1,5 @@
 {
-  "plan_id": "fb185111-7599-4990-b443-a32ea2cc8465",
+  "plan_id": "24da6dbe-8c21-45ac-9ba2-b3e769a4d6e9",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 109,
   "decided_at": "2026-11-13T21:04:30+09:00",
@@ -78,7 +78,7 @@
           "params": {
             "power": "off"
           },
-          "reason": "SLEEP_CONFIRMED"
+          "reason": "SLEEP_CONFIRMED:person_a"
         },
         {
           "device_id": "curtain_room1",
@@ -86,7 +86,7 @@
           "params": {
             "position_pct": 0
           },
-          "reason": "SLEEP_CONFIRMED"
+          "reason": "SLEEP_CONFIRMED:person_a"
         }
       ],
       "restrictions": [],
@@ -103,7 +103,7 @@
       "params": {
         "power": "off"
       },
-      "reason": "SLEEP_CONFIRMED"
+      "reason": "SLEEP_CONFIRMED:person_a"
     },
     {
       "device_id": "curtain_room1",
@@ -111,7 +111,7 @@
       "params": {
         "position_pct": 0
       },
-      "reason": "SLEEP_CONFIRMED"
+      "reason": "SLEEP_CONFIRMED:person_a"
     }
   ],
   "conflicts": [
@@ -187,8 +187,8 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "8e73d233-3032-4a1c-881f-70c38a891c3f",
-      "plan_id": "1794989265245887900",
+      "command_id": "b52140ab-1ad5-4ff4-8097-10404f732b7c",
+      "plan_id": "24da6dbe-8c21-45ac-9ba2-b3e769a4d6e9",
       "issued_at": "2026-11-13T21:04:30+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 109,
@@ -198,14 +198,14 @@
         "power": "off"
       },
       "reason_codes": [
-        "SLEEP_CONFIRMED",
+        "SLEEP_CONFIRMED:person_a",
         "voice_reply:yes"
       ]
     },
     {
       "schema_version": "2.0",
-      "command_id": "2f49b7fc-8739-4966-89c0-fe83988c00b3",
-      "plan_id": "1794989265245887900",
+      "command_id": "9d16d3ea-fad6-4118-8507-355428d6c10b",
+      "plan_id": "24da6dbe-8c21-45ac-9ba2-b3e769a4d6e9",
       "issued_at": "2026-11-13T21:04:30+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 109,
@@ -215,12 +215,12 @@
         "position_pct": 0
       },
       "reason_codes": [
-        "SLEEP_CONFIRMED",
+        "SLEEP_CONFIRMED:person_a",
         "voice_reply:yes"
       ]
     }
   ],
   "rejected": [],
   "speech": [],
-  "summary": "이전과 같은 충돌, 같은 선택 유지"
+  "summary": "LLM 없이 제한을 지키는 선택"
 }

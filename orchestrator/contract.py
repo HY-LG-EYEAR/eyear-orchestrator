@@ -335,11 +335,18 @@ class WorldSnapshot(_M):
                       r.humidity_pct.evidence, r.pm25_ug_m3.evidence, r.pm25_trend_per_min.evidence):
                 ev(e)
         tracks = set()
+        occupancy = {r.room_id: r.occupancy.state for r in self.rooms}
         for p in self.people:
             need(p.room_id, rooms, "room")
             need(p.profile_id, profiles, "profile")
             ev(p.evidence)
             ev(p.activity.evidence)
+            if p.position is not None:
+                ev(p.position.evidence)
+            if p.identity in ("UNKNOWN", "GUEST") and p.profile_id is not None:
+                raise ValueError(f"{p.person_id}: {p.identity}에는 profile_id를 연결하지 않음")
+            if p.room_id is not None and occupancy.get(p.room_id) == "EMPTY":
+                raise ValueError(f"{p.person_id}: EMPTY인 방({p.room_id})에 사람이 있음")
             for t in p.track_refs:
                 need(t.node_id, nodes, "node")
                 key = (t.node_id, t.track_id)
@@ -348,6 +355,7 @@ class WorldSnapshot(_M):
                 tracks.add(key)
         for d in self.devices:
             need(d.room_id, rooms, "room")
+            ev(d.evidence)
             s = d.state
             if isinstance(s, VacuumState):
                 need(s.dock_room_id, rooms, "room")
