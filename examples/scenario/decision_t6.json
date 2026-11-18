@@ -1,0 +1,180 @@
+{
+  "plan_id": "9addaac0-41ca-4d96-9acf-b5acceaf3514",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 116,
+  "decided_at": "2026-11-13T22:55:20+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 116,
+      "actions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "params": {
+            "room_ids": [
+              "room1"
+            ],
+            "mode": "normal"
+          },
+          "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.464
+      },
+      "reasons": [],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 116,
+      "actions": [
+        {
+          "device_id": "washer_01",
+          "action": "set_mode",
+          "params": {
+            "mode": "normal"
+          },
+          "reason": "PROTECTION_ENDED"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "disturb:washer_01:living": 0.16
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 116,
+      "actions": [
+        {
+          "device_id": "ac_room1",
+          "action": "set_power",
+          "params": {
+            "power": "off"
+          },
+          "reason": "ROOM_EMPTY"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_living": 26.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 116,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {},
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [
+    {
+      "device_id": "vacuum_01",
+      "action": "start_cleaning",
+      "params": {
+        "room_ids": [
+          "room1"
+        ],
+        "mode": "normal"
+      },
+      "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+    },
+    {
+      "device_id": "washer_01",
+      "action": "set_mode",
+      "params": {
+        "mode": "normal"
+      },
+      "reason": "PROTECTION_ENDED"
+    },
+    {
+      "device_id": "ac_room1",
+      "action": "set_power",
+      "params": {
+        "power": "off"
+      },
+      "reason": "ROOM_EMPTY"
+    }
+  ],
+  "conflicts": [],
+  "choices": [],
+  "arbitration": "none",
+  "commands": [
+    {
+      "schema_version": "2.0",
+      "command_id": "9be8fed1-7333-42fa-acf9-cf573c3c860e",
+      "plan_id": "1794989266802019700",
+      "issued_at": "2026-11-13T22:55:20+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 116,
+      "device_id": "vacuum_01",
+      "action": "start_cleaning",
+      "params": {
+        "room_ids": [
+          "room1"
+        ],
+        "mode": "normal"
+      },
+      "reason_codes": [
+        "ROUTINE_DUE:daily_clean_20261113_evening",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "b60748b2-f6e5-4eb9-8a3d-a70876eeeb38",
+      "plan_id": "1794989266802019700",
+      "issued_at": "2026-11-13T22:55:20+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 116,
+      "device_id": "washer_01",
+      "action": "set_mode",
+      "params": {
+        "mode": "normal"
+      },
+      "reason_codes": [
+        "PROTECTION_ENDED",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "5ce61237-c7b6-459f-b84c-43917bcb6267",
+      "plan_id": "1794989266802019700",
+      "issued_at": "2026-11-13T22:55:20+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 116,
+      "device_id": "ac_room1",
+      "action": "set_power",
+      "params": {
+        "power": "off"
+      },
+      "reason_codes": [
+        "ROOM_EMPTY",
+        "snapshot"
+      ]
+    }
+  ],
+  "rejected": [],
+  "speech": [],
+  "summary": ""
+}

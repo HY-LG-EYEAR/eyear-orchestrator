@@ -1,0 +1,157 @@
+{
+  "plan_id": "29e313e5-147e-4248-a6b5-6093f9d5d120",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 113,
+  "decided_at": "2026-11-13T21:40:00+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 113,
+      "actions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "params": {
+            "room_ids": [
+              "room1"
+            ],
+            "mode": "normal"
+          },
+          "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.406
+      },
+      "reasons": [],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 113,
+      "actions": [],
+      "restrictions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "room_id": "room1",
+          "strength": "strong",
+          "reason": "ROOM_OCCUPIED_RESTING"
+        }
+      ],
+      "questions": [],
+      "scores": {
+        "disturb:vacuum_01:room1": 0.953,
+        "disturb:washer_01:room1": 0.84,
+        "disturb:washer_01:living": 0.151
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 113,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_room1": 24.0,
+        "target:ac_living": 26.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 113,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {},
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [],
+  "conflicts": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "device_id": "vacuum_01",
+      "description": "청소 제안 ['room1']가 소음 제한과 겹침 [room1:ROOM_OCCUPIED_RESTING(strong)]",
+      "options": [
+        {
+          "option_id": "original",
+          "summary": "제안대로 ['room1'] 청소(normal)",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "normal"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "quiet",
+          "summary": "['room1']를 저소음으로 청소",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "quiet"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "hold",
+          "summary": "청소를 모두 미룸 ['room1']",
+          "actions": [],
+          "deferred_rooms": [
+            "room1"
+          ],
+          "from_agents": [
+            "noise"
+          ]
+        }
+      ]
+    }
+  ],
+  "choices": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "option_id": "hold",
+      "reason": "FALLBACK_RESPECT_RESTRICTIONS"
+    }
+  ],
+  "arbitration": "cached",
+  "commands": [],
+  "rejected": [],
+  "speech": [],
+  "summary": "이전과 같은 충돌, 같은 선택 유지"
+}

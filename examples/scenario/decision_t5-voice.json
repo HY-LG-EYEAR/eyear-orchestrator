@@ -1,0 +1,52 @@
+{
+  "plan_id": "cb07e2ba-ee72-4a70-835f-3f7232bcfeac",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 113,
+  "decided_at": "2026-11-13T21:40:00+09:00",
+  "trigger": "voice_command:불 켜줘",
+  "proposals": [],
+  "accepted": [
+    {
+      "device_id": "light_room1",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason": "DIRECT_COMMAND"
+    }
+  ],
+  "conflicts": [],
+  "choices": [],
+  "arbitration": "none",
+  "commands": [
+    {
+      "schema_version": "2.0",
+      "command_id": "6a099b43-cc1c-4d86-b356-b00714e21b1d",
+      "plan_id": "1794989266130640500",
+      "issued_at": "2026-11-13T21:40:00+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 113,
+      "device_id": "light_room1",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason_codes": [
+        "DIRECT_COMMAND",
+        "DIRECT_COMMAND"
+      ]
+    }
+  ],
+  "rejected": [],
+  "speech": [
+    {
+      "schema_version": "0.1",
+      "command_id": "6b2d911b-2dc9-4aef-ae87-08bba4d02c7b",
+      "timestamp": "2026-11-13T21:40:00+09:00",
+      "text": "네, 불을 켤게요.",
+      "expect_reply": false,
+      "listen_seconds": 5.0
+    }
+  ],
+  "summary": "직접 명령은 자동 계획보다 우선"
+}

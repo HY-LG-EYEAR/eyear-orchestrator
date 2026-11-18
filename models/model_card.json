@@ -1,0 +1,80 @@
+{
+  "version": "0.1",
+  "trained_at": "2026-11-18T08:04:54+00:00",
+  "data": {
+    "households": 16,
+    "days": 14,
+    "seed": 7,
+    "split": "가구 0~11 학습, 12~15 평가"
+  },
+  "agents": {
+    "cleaning": {
+      "rows_train": 48384,
+      "rows_test": 16128,
+      "rule": {
+        "mae": 0.3107
+      },
+      "hgb": {
+        "mae": 0.0626
+      },
+      "ridge": {
+        "mae": 0.0663
+      },
+      "chosen": "hgb"
+    },
+    "noise": {
+      "rows_train": 25718,
+      "rows_test": 7861,
+      "rule": {
+        "auc": 0.7793,
+        "log_loss": 0.5815,
+        "brier": 0.1891
+      },
+      "logreg": {
+        "auc": 0.8301,
+        "log_loss": 0.5002,
+        "brier": 0.165
+      },
+      "hgb": {
+        "auc": 0.8272,
+        "log_loss": 0.4996,
+        "brier": 0.1656
+      },
+      "chosen": "logreg"
+    },
+    "temperature": {
+      "rows_train": 67928,
+      "rows_test": 21340,
+      "rule": {
+        "mae": 0.6762
+      },
+      "ridge": {
+        "mae": 0.3256
+      },
+      "hgb": {
+        "mae": 0.3253
+      },
+      "chosen": "ridge"
+    },
+    "lighting": {
+      "rows_train": 12771,
+      "rows_test": 3728,
+      "rule": {
+        "auc": 0.6549,
+        "log_loss": 0.5217,
+        "brier": 0.1825
+      },
+      "logreg": {
+        "auc": 0.7941,
+        "log_loss": 0.3028,
+        "brier": 0.0861
+      },
+      "hgb": {
+        "auc": 0.8206,
+        "log_loss": 0.292,
+        "brier": 0.0836
+      },
+      "chosen": "logreg"
+    }
+  }
+}

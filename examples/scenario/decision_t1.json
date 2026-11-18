@@ -1,0 +1,260 @@
+{
+  "plan_id": "0a1d5a25-c0ab-47a0-b003-f3d788e7a5ff",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 105,
+  "decided_at": "2026-11-13T21:02:10+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 105,
+      "actions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "params": {
+            "room_ids": [
+              "room1"
+            ],
+            "mode": "normal"
+          },
+          "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.358
+      },
+      "reasons": [],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 105,
+      "actions": [
+        {
+          "device_id": "washer_01",
+          "action": "set_mode",
+          "params": {
+            "mode": "low_noise"
+          },
+          "reason": "NEIGHBOR_OCCUPIED:room1"
+        }
+      ],
+      "restrictions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "room_id": "room1",
+          "strength": "strong",
+          "reason": "ROOM_OCCUPIED"
+        }
+      ],
+      "questions": [],
+      "scores": {
+        "disturb:vacuum_01:room1": 0.817,
+        "disturb:washer_01:room1": 0.606,
+        "disturb:washer_01:living": 0.187
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 105,
+      "actions": [
+        {
+          "device_id": "ac_room1",
+          "action": "set_power",
+          "params": {
+            "power": "on"
+          },
+          "reason": "ROOM_OCCUPIED"
+        },
+        {
+          "device_id": "ac_room1",
+          "action": "set_airflow_target",
+          "params": {
+            "person_id": "person_a"
+          },
+          "reason": "PREFERS_COOLER"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_room1": 24.0,
+        "target:ac_living": 26.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 105,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {},
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [
+    {
+      "device_id": "washer_01",
+      "action": "set_mode",
+      "params": {
+        "mode": "low_noise"
+      },
+      "reason": "NEIGHBOR_OCCUPIED:room1"
+    },
+    {
+      "device_id": "ac_room1",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason": "ROOM_OCCUPIED"
+    },
+    {
+      "device_id": "ac_room1",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_a"
+      },
+      "reason": "PREFERS_COOLER"
+    }
+  ],
+  "conflicts": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "device_id": "vacuum_01",
+      "description": "청소 제안 ['room1']가 소음 제한과 겹침 [room1:ROOM_OCCUPIED(strong)]",
+      "options": [
+        {
+          "option_id": "original",
+          "summary": "제안대로 ['room1'] 청소(normal)",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "normal"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "quiet",
+          "summary": "['room1']를 저소음으로 청소",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "quiet"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "hold",
+          "summary": "청소를 모두 미룸 ['room1']",
+          "actions": [],
+          "deferred_rooms": [
+            "room1"
+          ],
+          "from_agents": [
+            "noise"
+          ]
+        }
+      ]
+    }
+  ],
+  "choices": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "option_id": "hold",
+      "reason": "FALLBACK_RESPECT_RESTRICTIONS"
+    }
+  ],
+  "arbitration": "fallback",
+  "commands": [
+    {
+      "schema_version": "2.0",
+      "command_id": "54adf983-6064-4874-b062-e209812c6717",
+      "plan_id": "1794989264320025200",
+      "issued_at": "2026-11-13T21:02:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 105,
+      "device_id": "washer_01",
+      "action": "set_mode",
+      "params": {
+        "mode": "low_noise"
+      },
+      "reason_codes": [
+        "NEIGHBOR_OCCUPIED:room1",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "c61f0a3c-eee1-4498-bd35-7cb3a16fe61f",
+      "plan_id": "1794989264320025200",
+      "issued_at": "2026-11-13T21:02:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 105,
+      "device_id": "ac_room1",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason_codes": [
+        "ROOM_OCCUPIED",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "791e7b3c-d2fc-4700-9747-b1e66fcc66cb",
+      "plan_id": "1794989264320025200",
+      "issued_at": "2026-11-13T21:02:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 105,
+      "device_id": "ac_room1",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_a"
+      },
+      "reason_codes": [
+        "PREFERS_COOLER",
+        "snapshot"
+      ]
+    }
+  ],
+  "rejected": [],
+  "speech": [],
+  "summary": "LLM 없이 제한을 지키는 선택"
+}

@@ -1,0 +1,138 @@
+{
+  "plan_id": "4adde9a2-dd1f-4492-aa82-3cdf5ea44cb4",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 120,
+  "decided_at": "2026-11-13T22:56:10+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 120,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.076
+      },
+      "reasons": [
+        "VACUUM_BUSY:cleaning"
+      ],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 120,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "disturb:washer_01:living": 0.203
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 120,
+      "actions": [
+        {
+          "device_id": "ac_living",
+          "action": "set_target_temperature",
+          "params": {
+            "target_c": 25.0
+          },
+          "reason": "PREFERENCE_person_b+person_a"
+        },
+        {
+          "device_id": "ac_living",
+          "action": "set_airflow_target",
+          "params": {
+            "person_id": "person_a"
+          },
+          "reason": "PREFERS_COOLER"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_living": 25.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 120,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {},
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [
+    {
+      "device_id": "ac_living",
+      "action": "set_target_temperature",
+      "params": {
+        "target_c": 25.0
+      },
+      "reason": "PREFERENCE_person_b+person_a"
+    },
+    {
+      "device_id": "ac_living",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_a"
+      },
+      "reason": "PREFERS_COOLER"
+    }
+  ],
+  "conflicts": [],
+  "choices": [],
+  "arbitration": "none",
+  "commands": [
+    {
+      "schema_version": "2.0",
+      "command_id": "bca78cc4-6831-440a-81ba-41157c25c59e",
+      "plan_id": "1794989267012511100",
+      "issued_at": "2026-11-13T22:56:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 120,
+      "device_id": "ac_living",
+      "action": "set_target_temperature",
+      "params": {
+        "target_c": 25.0
+      },
+      "reason_codes": [
+        "PREFERENCE_person_b+person_a",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "384f9b43-21d2-435c-a40a-48a29950ab22",
+      "plan_id": "1794989267012511100",
+      "issued_at": "2026-11-13T22:56:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 120,
+      "device_id": "ac_living",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_a"
+      },
+      "reason_codes": [
+        "PREFERS_COOLER",
+        "snapshot"
+      ]
+    }
+  ],
+  "rejected": [],
+  "speech": [],
+  "summary": ""
+}

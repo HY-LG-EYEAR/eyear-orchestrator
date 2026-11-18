@@ -1,0 +1,174 @@
+{
+  "plan_id": "35a60941-4a21-4d4c-9a9c-075b0a64a5d0",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 109,
+  "decided_at": "2026-11-13T21:04:30+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 109,
+      "actions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "params": {
+            "room_ids": [
+              "room1"
+            ],
+            "mode": "normal"
+          },
+          "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.358
+      },
+      "reasons": [],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 109,
+      "actions": [],
+      "restrictions": [
+        {
+          "device_id": "vacuum_01",
+          "action": "start_cleaning",
+          "room_id": "room1",
+          "strength": "strong",
+          "reason": "ROOM_OCCUPIED_RESTING"
+        }
+      ],
+      "questions": [],
+      "scores": {
+        "disturb:vacuum_01:room1": 0.954,
+        "disturb:washer_01:room1": 0.84,
+        "disturb:washer_01:living": 0.146
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 109,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_room1": 24.0,
+        "target:ac_living": 26.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 109,
+      "actions": [],
+      "restrictions": [],
+      "questions": [
+        {
+          "kind": "sleep_intent",
+          "person_id": "person_a",
+          "room_id": "room1"
+        }
+      ],
+      "scores": {
+        "sleep:person_a": 0.884
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [],
+  "conflicts": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "device_id": "vacuum_01",
+      "description": "청소 제안 ['room1']가 소음 제한과 겹침 [room1:ROOM_OCCUPIED_RESTING(strong)]",
+      "options": [
+        {
+          "option_id": "original",
+          "summary": "제안대로 ['room1'] 청소(normal)",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "normal"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "quiet",
+          "summary": "['room1']를 저소음으로 청소",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "start_cleaning",
+              "params": {
+                "room_ids": [
+                  "room1"
+                ],
+                "mode": "quiet"
+              },
+              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+            }
+          ],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "hold",
+          "summary": "청소를 모두 미룸 ['room1']",
+          "actions": [],
+          "deferred_rooms": [
+            "room1"
+          ],
+          "from_agents": [
+            "noise"
+          ]
+        }
+      ]
+    }
+  ],
+  "choices": [
+    {
+      "conflict_id": "vacuum_01:start_cleaning",
+      "option_id": "hold",
+      "reason": "FALLBACK_RESPECT_RESTRICTIONS"
+    }
+  ],
+  "arbitration": "fallback",
+  "commands": [],
+  "rejected": [],
+  "speech": [
+    {
+      "schema_version": "0.1",
+      "command_id": "c7bf7805-97c6-411b-9202-fd7b56c55d66",
+      "timestamp": "2026-11-13T21:04:30+09:00",
+      "text": "A님, 주무실 거면 '네'라고 말씀해 주세요.",
+      "expect_reply": true,
+      "listen_seconds": 5.0
+    }
+  ],
+  "summary": "LLM 없이 제한을 지키는 선택"
+}

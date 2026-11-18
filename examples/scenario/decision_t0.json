@@ -1,0 +1,169 @@
+{
+  "plan_id": "05a20c05-4a58-4195-9336-f54d3befcb9e",
+  "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+  "world_revision": 101,
+  "decided_at": "2026-11-13T21:00:00+09:00",
+  "trigger": "snapshot",
+  "proposals": [
+    {
+      "agent": "cleaning",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 101,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "urgency:room1": 0.38
+      },
+      "reasons": [],
+      "model": "hgb@0.1"
+    },
+    {
+      "agent": "noise",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 101,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "disturb:washer_01:living": 0.186
+      },
+      "reasons": [],
+      "model": "logreg@0.1"
+    },
+    {
+      "agent": "temperature",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 101,
+      "actions": [
+        {
+          "device_id": "ac_living",
+          "action": "set_power",
+          "params": {
+            "power": "on"
+          },
+          "reason": "ROOM_OCCUPIED"
+        },
+        {
+          "device_id": "ac_living",
+          "action": "set_target_temperature",
+          "params": {
+            "target_c": 26.0
+          },
+          "reason": "PREFERENCE_person_b"
+        },
+        {
+          "device_id": "ac_living",
+          "action": "set_airflow_target",
+          "params": {
+            "person_id": "person_b"
+          },
+          "reason": "PREFERS_COOLER"
+        }
+      ],
+      "restrictions": [],
+      "questions": [],
+      "scores": {
+        "target:ac_living": 26.0
+      },
+      "reasons": [],
+      "model": "ridge@0.1"
+    },
+    {
+      "agent": "lighting",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "world_revision": 101,
+      "actions": [],
+      "restrictions": [],
+      "questions": [],
+      "scores": {},
+      "reasons": [],
+      "model": "logreg@0.1"
+    }
+  ],
+  "accepted": [
+    {
+      "device_id": "ac_living",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason": "ROOM_OCCUPIED"
+    },
+    {
+      "device_id": "ac_living",
+      "action": "set_target_temperature",
+      "params": {
+        "target_c": 26.0
+      },
+      "reason": "PREFERENCE_person_b"
+    },
+    {
+      "device_id": "ac_living",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_b"
+      },
+      "reason": "PREFERS_COOLER"
+    }
+  ],
+  "conflicts": [],
+  "choices": [],
+  "arbitration": "none",
+  "commands": [
+    {
+      "schema_version": "2.0",
+      "command_id": "5afab196-7c6d-434a-890d-f8362df29b49",
+      "plan_id": "1794989263849566000",
+      "issued_at": "2026-11-13T21:00:00+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 101,
+      "device_id": "ac_living",
+      "action": "set_power",
+      "params": {
+        "power": "on"
+      },
+      "reason_codes": [
+        "ROOM_OCCUPIED",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "6fe48be4-db99-4939-b210-310ddba6c146",
+      "plan_id": "1794989263849566000",
+      "issued_at": "2026-11-13T21:00:00+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 101,
+      "device_id": "ac_living",
+      "action": "set_target_temperature",
+      "params": {
+        "target_c": 26.0
+      },
+      "reason_codes": [
+        "PREFERENCE_person_b",
+        "snapshot"
+      ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "16214e25-4435-40a3-a8a7-2572aceeba4a",
+      "plan_id": "1794989263849566000",
+      "issued_at": "2026-11-13T21:00:00+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 101,
+      "device_id": "ac_living",
+      "action": "set_airflow_target",
+      "params": {
+        "person_id": "person_b"
+      },
+      "reason_codes": [
+        "PREFERS_COOLER",
+        "snapshot"
+      ]
+    }
+  ],
+  "rejected": [],
+  "speech": [],
+  "summary": ""
+}
