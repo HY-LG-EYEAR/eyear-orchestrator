@@ -40,8 +40,22 @@ log = logging.getLogger(__name__)
 
 MANUAL_HOLD = timedelta(minutes=30)   # 직접 명령 뒤 같은 기기를 자동으로 되돌리지 않는 시간
 MEMO_TTL = timedelta(minutes=15)      # 같은 충돌의 선택을 재사용하는 최대 시간 (스냅샷 시각 기준)
-PENDING_TIMEOUT_S = 60.0              # 결과가 이 시간 안에 안 오면 명령을 유실로 보고 다시 보낼 수 있게 함
+ACCEPT_TIMEOUT_S = 30.0               # 명령을 보낸 뒤 접수(accepted) 또는 결과를 기다리는 시간
+SNAPSHOT_MAX_AGE_S = 120.0            # 마지막 스냅샷을 받은 뒤 이 시간이 지나면 상태를 오래된 것으로 봄
 TERMINAL = {"completed", "failed", "rejected"}
+IDEMPOTENT_ACTIONS = {"set_mode", "set_power", "set_target_temperature", "set_airflow_target", "set_curtain_position"}
+TRANSIENT_FAILURES = {"busy", "timeout", "temporarily_unavailable"}   # 다시 시도해도 되는 실패 이유
+MAX_RETRIES = 2
+RETRY_INTERVAL = timedelta(minutes=5)
+
+
+def occurrence_of(a: ProposedAction) -> str | None:
+    """청소 제안의 reason(ROUTINE_DUE:<occurrence_id>)에서 회차를 꺼낸다."""
+    return a.reason.split(":", 1)[1] if a.reason.startswith("ROUTINE_DUE:") else None
+
+
+def action_key(device_id: str, action: str, params: dict, occurrence_id: str | None) -> tuple:
+    return (device_id, action, json.dumps(params, sort_keys=True, default=str), occurrence_id)
 
 
 # ---------- 검증 ----------
@@ -223,12 +237,15 @@ def _deadline_bucket(snap: WorldSnapshot) -> list:
 
 
 def memo_key(c: Conflict, snap: WorldSnapshot, proposals: list[AgentProposal]) -> str:
-    """같은 충돌이라도 마감 구간, 관련 점수 구간, 사용자 금지가 다르면 다른 상황으로 본다."""
-    scores = {k: round(v * 4) / 4 for p in proposals for k, v in p.scores.items()
-              if k.startswith(("urgency:", "disturb:"))}
-    return json.dumps({"conflict": c.model_dump(), "deadline": _deadline_bucket(snap), "scores": scores,
-                       "restrictions": [u.model_dump(mode="json") for u in snap.user_restrictions]},
-                      sort_keys=True, default=str)
+    """같은 충돌이라도 관련 선호·사람·제한·루틴·마감 구간 중 하나라도 바뀌면 다른 상황으로 본다(보수적 무효화)."""
+    return json.dumps({
+        "conflict": c.model_dump(),
+        "deadline": _deadline_bucket(snap),
+        "routines": [(r.occurrence_id, r.due, r.room_ids) for r in snap.routines],
+        "people": [(p.person_id, p.room_id, p.profile_id, p.activity.label, p.activity.confirmed) for p in snap.people],
+        "profiles": [p.model_dump() for p in snap.profiles],
+        "restrictions": [u.model_dump(mode="json") for u in snap.user_restrictions],
+    }, sort_keys=True, default=str)
 
 
 def decision_key(snap: WorldSnapshot) -> str:
@@ -263,8 +280,13 @@ class Memo:
 
 @dataclass
 class Pending:
+    """발행한 명령의 진행 상태.
+    sent → (accepted | in_progress | unknown) → completed / failed / rejected 결과로 종료.
+    unknown: 접수 응답이 없어 실행 여부를 모름. 실패로 보지 않고, 같은 명령을 다시 보내지 않는다."""
+
     cmd: DeviceCommand
     sent_at: float
+    occurrence_id: str | None = None   # 명령 당시 청소 회차 (완료는 이 회차에 기록)
     status: str = "sent"
 
 
@@ -277,6 +299,8 @@ class Plan:
     keys: dict[str, str]
     rejected: list[Rejected] = field(default_factory=list)
     sleep_people: set[str] = field(default_factory=set)  # 수면 확인 뒤 조명·커튼을 제안받은 사람
+    generation: int = 0      # reset·세션 세대. 다르면 계획을 버린다
+    change_no: int = 0       # 중앙 상태 변경 번호(직접 명령·제어·대답). 다르면 다시 계산한다
 
 
 class Orchestrator:
@@ -290,14 +314,19 @@ class Orchestrator:
         self.clock, self.trace_path = clock, trace_path
         self.lock = threading.RLock()
         self.decisions: deque[Decision] = deque(maxlen=history_size)
+        self.generation = 0
         self.reset()
 
     # ----- 상태 -----
 
     def reset(self, session_id: str | None = None, clock_mode: str | None = None) -> None:
         with self.lock:
+            self.generation += 1
+            self.change_no = 0
             self.session_id, self.clock_mode = session_id, clock_mode
             self.snap: WorldSnapshot | None = None
+            self.snap_received: float | None = None
+            self.failures: dict[tuple, tuple[int, datetime | None]] = {}  # 동작 키 → (실패 횟수, 다시 시도 가능 시각)
             self.hist = History()
             self.dialogue = DialogueManager()
             self.protected: dict[str, set[str]] = {}
@@ -327,9 +356,12 @@ class Orchestrator:
                     and snap.world_revision <= cur.world_revision:
                 log.info("옛 스냅샷 무시: rev %s (현재 %s)", snap.world_revision, cur.world_revision)
                 return None
+            if cur is not None and cur.world_session_id != snap.world_session_id:
+                self.generation += 1   # 세션이 바뀌면 진행 중인 판단은 버린다
             self.hist.observe(snap)
             self.dialogue.update(snap)
-            self.snap = snap
+            self.snap, self.snap_received = snap, self.clock()
+            self._observe_pending(snap)
             key = decision_key(snap) + json.dumps({k: (v.state, v.answer) for k, v in self.dialogue.episodes.items()})
             if key == self.last_key:
                 return None
@@ -344,6 +376,7 @@ class Orchestrator:
             if ep is None:
                 return None
             self.last_key = None
+            self.change_no += 1
         return self.decide(f"voice_reply:{ep.answer}")
 
     def on_voice_command(self, cmd: VoiceCommand) -> Decision | None:
@@ -356,9 +389,18 @@ class Orchestrator:
             if node is None or node.node_id != cmd.node_id:
                 log.warning("등록되지 않은 Node의 명령 무시: %s@%s", cmd.node_id, cmd.room_id)
                 return None
+            self.change_no += 1
             parsed = parse_command(cmd.text)
             accepted, rejected, speech = [], [], []
-            if parsed is None:
+            if not self._snapshot_fresh():
+                speech.append(self._say(cmd.room_id, "지금은 집 상태를 확인할 수 없어 실행하지 않았어요.", False))
+                if parsed is not None:
+                    dev = next((d for d in snap.devices if d.kind == parsed[0] and d.room_id == cmd.room_id), None)
+                    if dev is not None:
+                        rejected.append(Rejected(action=ProposedAction(device_id=dev.device_id, action=parsed[1],
+                                                                       params=parsed[2], reason="DIRECT_COMMAND"),
+                                                 reason="SNAPSHOT_STALE"))
+            elif parsed is None:
                 speech.append(self._say(cmd.room_id, "죄송해요, 잘 알아듣지 못했어요.", False))
             else:
                 kind, action, params, ack = parsed
@@ -392,26 +434,45 @@ class Orchestrator:
                 p.status = res.status
                 return
             self.pending.pop(res.command_id)
-            if res.status != "completed" or self.snap is None:
+            key = action_key(p.cmd.device_id, p.cmd.action, p.cmd.params, p.occurrence_id)
+            if res.status == "completed":
+                self.failures.pop(key, None)
+                if p.cmd.action == "start_cleaning":
+                    for room_id in p.cmd.params.get("room_ids", []):
+                        self.hist.mark_cleaned(room_id, res.timestamp, p.occurrence_id)
                 return
-            if p.cmd.action == "start_cleaning":
-                occ = next((r.occurrence_id for r in self.snap.routines if r.device_id == p.cmd.device_id and r.due), None)
-                for room_id in p.cmd.params.get("room_ids", []):
-                    self.hist.mark_cleaned(room_id, res.timestamp, occ)
+            # 알려진 일시적 실패만 간격·횟수를 제한해 다시 시도. 거절·원인 불명은 자동으로 반복하지 않는다
+            count = self.failures.get(key, (0, None))[0] + 1
+            transient = res.status == "failed" and (res.reason or "") in TRANSIENT_FAILURES and count <= MAX_RETRIES
+            self.failures[key] = (count, res.timestamp + RETRY_INTERVAL if transient else None)
 
     def tick(self) -> list[str]:
         with self.lock:
             self._expire_pending()
             return [ep.person_id for ep in self.dialogue.check_deadlines(self.clock())]
 
-    def control(self, action: str) -> None:
+    def control(self, action: str) -> Decision | None:
+        """pause/resume/reset. resume은 상태가 신선하면 바로 다시 판단한다."""
         with self.lock:
             if action == "pause":
                 self.paused = True
+                self.change_no += 1
             elif action == "resume":
                 self.paused, self.last_key = False, None
+                self.change_no += 1
+                if not self._snapshot_fresh():
+                    return None
             elif action == "reset":
                 self.reset(self.session_id, self.clock_mode)
+            if action != "resume":
+                return None
+        return self.decide("resume")
+
+    def _snapshot_fresh(self) -> bool:
+        """마지막 스냅샷을 받은 지 SNAPSHOT_MAX_AGE_S 안인가. live·replay 모두 '받은 시각'으로 판단해
+        녹화 시나리오의 과거 날짜를 현재 시각과 비교하지 않는다. live의 as_of 나이는 서버가 수신 때 검사한다."""
+        return self.snap is not None and self.snap_received is not None \
+            and self.clock() - self.snap_received <= SNAPSHOT_MAX_AGE_S
 
     # ----- 판단 -----
 
@@ -432,8 +493,14 @@ class Orchestrator:
                 rev, context = plan.snap.world_revision, summarize(plan.snap, plan.proposals)
             sel = self.llm.select(context, missing)
             with self.lock:
+                # reset·세션 변경 → 이 판단은 버린다 (이전 세션 명령을 내지 않음)
+                if self.generation != plan.generation or self.snap is None \
+                        or self.snap.world_session_id != plan.snap.world_session_id:
+                    log.info("LLM 대기 중 reset·세션 변경 → 판단 폐기")
+                    return None
                 self._remember(missing, plan, sel if sel and self._valid_selection(sel, missing) else None, fresh)
-                if self.snap.world_revision == rev:
+                # 새 스냅샷, 직접 명령, 제어, 대답이 있었으면 최신 상태로 다시 계산 (LLM 선택은 캐시로 재사용)
+                if self.snap.world_revision == rev and self.change_no == plan.change_no:
                     return self._finish(plan, trigger, fresh)
         with self.lock:   # 계속 바뀌면 마지막 상태로 fallback
             plan = self._prepare()
@@ -457,11 +524,16 @@ class Orchestrator:
                 if until and snap.as_of < until:
                     rejected.append(Rejected(action=a, reason="DIRECT_COMMAND_HOLD"))
                     continue
+                count, retry_at = self.failures.get(action_key(a.device_id, a.action, a.params, occurrence_of(a)), (0, None))
+                if count and (retry_at is None or snap.as_of < retry_at):
+                    rejected.append(Rejected(action=a, reason="RETRY_BLOCKED" if retry_at is None else "RETRY_WAIT"))
+                    continue
                 kept.append(a)
             p.actions[:] = kept
         accepted, conflicts = find_conflicts(proposals, snap)
         keys = {c.conflict_id: memo_key(c, snap, proposals) for c in conflicts}
-        return Plan(snap, proposals, accepted, conflicts, keys, rejected, sleep_people)
+        return Plan(snap, proposals, accepted, conflicts, keys, rejected, sleep_people,
+                    generation=self.generation, change_no=self.change_no)
 
     def _memo_get(self, key: str, snap: WorldSnapshot) -> Memo | None:
         m = self.memo.get(key)
@@ -538,11 +610,29 @@ class Orchestrator:
         return set(got) == set(want) and all(got[k] in want[k] for k in want)
 
     def _expire_pending(self) -> None:
+        """접수 응답(accepted)이 ACCEPT_TIMEOUT_S 안에 없을 때만 처리한다. 접수된 작업은 시간으로 끝내지 않는다.
+        - 값을 맞추는 동작(set_*): 다음 스냅샷의 기기 상태로 확인되므로 pending을 풀어 다시 보낼 수 있게 한다
+        - 그 밖의 동작(청소 시작 등): 실행 여부를 모름(unknown)으로 두고 자동으로 다시 보내지 않는다"""
         now = self.clock()
         for cid, p in list(self.pending.items()):
-            if now - p.sent_at > PENDING_TIMEOUT_S:
-                log.warning("결과가 오지 않은 명령을 유실로 처리: %s %s", p.cmd.device_id, p.cmd.action)
+            if p.status != "sent" or now - p.sent_at <= ACCEPT_TIMEOUT_S:
+                continue
+            if p.cmd.action in IDEMPOTENT_ACTIONS:
+                log.warning("접수 응답 없음, 상태 확인 후 다시 보낼 수 있게 함: %s %s", p.cmd.device_id, p.cmd.action)
                 self.pending.pop(cid)
+            else:
+                log.warning("접수 응답 없음, 실행 여부 모름(다시 보내지 않음): %s %s", p.cmd.device_id, p.cmd.action)
+                p.status = "unknown"
+
+    def _observe_pending(self, snap: WorldSnapshot) -> None:
+        """청소 시작의 접수 여부를 기기 상태로 확인한다: 청소기가 그 방들을 청소 중이면 진행 중."""
+        for p in self.pending.values():
+            if p.cmd.action != "start_cleaning" or p.status not in ("sent", "unknown"):
+                continue
+            d = snap.device(p.cmd.device_id)
+            if d is not None and getattr(d.state, "status", None) == "cleaning" \
+                    and set(d.state.target_room_ids) == set(p.cmd.params.get("room_ids", [])):
+                p.status = "in_progress"
 
     def _dispatch(self, actions, snap, plan_id: str, reasons) -> list[DeviceCommand]:
         commands = []
@@ -550,7 +640,7 @@ class Orchestrator:
             cmd = DeviceCommand(plan_id=plan_id, issued_at=snap.as_of, world_session_id=snap.world_session_id,
                                 based_on_revision=snap.world_revision, device_id=a.device_id, action=a.action,
                                 params=a.params, reason_codes=[a.reason] + reasons)
-            self.pending[cmd.command_id] = Pending(cmd, self.clock())
+            self.pending[cmd.command_id] = Pending(cmd, self.clock(), occurrence_of(a))
             commands.append(cmd)
         for cmd in commands:
             try:

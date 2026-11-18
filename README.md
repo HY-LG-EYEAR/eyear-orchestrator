@@ -19,14 +19,16 @@ Device adapter ──execution result──▶ World Model ──(HTTP)──▶
 1. All four agents read the same snapshot and make proposals. Agents never send commands themselves.
 2. **Proposals that do not conflict are accepted as they are.**
 3. A conflict is a different value proposed for the same device, or an action blocked by another agent's restriction. For each conflict, the options are built mechanically and **the LLM chooses one of them.** The LLM cannot create new commands.
-4. If the LLM is unavailable or fails, a deterministic fallback chooses the option that respects the restrictions. A choice is reused for up to 15 minutes while the same conflict continues under the same situation (deadline band, agent score band, user restrictions).
+4. If the LLM is unavailable or fails, a deterministic fallback chooses the option that respects the restrictions. A choice is reused for up to 15 minutes only while the same conflict continues and the related preferences, people, restrictions, routines, and deadline band are unchanged.
 5. Every command is validated before it is sent: supported action and mode, temperature range and step, fresh device state, online state, manual override, user restrictions, and duplicates of commands still in progress.
 
 Notes
-- **Pause** stops automatic control only. A command the resident speaks directly ("하이 엘지, 불 켜줘") is still carried out.
-- The LLM is called outside the Orchestrator's lock. If a newer snapshot arrives while waiting for the LLM, the decision is recomputed on the newest state.
-- Snapshots older than the current `world_revision` of the same session are ignored.
-- A command stays pending until a final result (`completed`, `failed`, or `rejected`) arrives for the same session and device; `accepted` keeps it pending. Without a result for 60 seconds it is treated as lost and may be sent again.
+- **Pause** stops automatic control only. A command the resident speaks directly ("하이 엘지, 불 켜줘") is still carried out. **Resume** decides again immediately if the last snapshot was received within 120 seconds; otherwise it waits for the next snapshot.
+- The LLM is called outside the Orchestrator's lock. If a newer snapshot, a direct command, a pause/resume, or a voice reply arrives while waiting, the decision is recomputed on the newest state. If the Orchestrator was reset or the session changed, the pending decision is discarded.
+- Snapshots older than the current `world_revision` of the same session are ignored. Freshness is judged by when a snapshot was received (live and replay alike), so recorded scenarios with past dates still work; the server checks the age of live `as_of` on receipt.
+- A command stays pending until a final result (`completed`, `failed`, or `rejected`) arrives for the same session and device. `accepted` and in-progress work never expire by time. If not even `accepted` arrives within 30 seconds, value-setting commands (`set_*`) may be sent again after the next state check, while other commands (such as `start_cleaning`) are marked unknown and are not resent automatically. A cleaning completion is recorded on the routine occurrence the command was issued for.
+- Failures with a known transient reason (`busy`, `timeout`, `temporarily_unavailable`) are retried after 5 minutes, at most twice. Rejections and other failures are not repeated automatically.
+- A direct command is refused if the last snapshot is older than 120 seconds.
 - Conflict detection currently covers different values for the same device and action, and cleaning rooms blocked by a noise restriction. Other combinations (for example `start_cleaning` vs. `return_to_dock`) are not yet detected.
 - Sleep questions are accepted only from the Node and room the question was sent to.
 

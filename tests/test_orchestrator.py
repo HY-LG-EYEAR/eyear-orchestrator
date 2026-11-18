@@ -12,6 +12,7 @@ from orchestrator.contract import WorldSnapshot
 from orchestrator.demo import run_demo
 from orchestrator.fixtures import DemoHome
 from orchestrator.schemas import Choice, LlmSelection, ProposedAction, VoiceReply
+from datetime import timedelta
 from orchestrator.voice import interpret_reply, parse_command
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -333,3 +334,148 @@ def test_inconsistent_voice_reply_is_rejected():
 def test_broken_model_file_falls_back_to_rules(tmp_path):
     (tmp_path / "noise.joblib").write_bytes(b"broken")
     assert Models(tmp_path).name("noise") == "rule"
+
+
+# ---------- 2차 점검: 진행 중 작업, LLM 대기 중 상태 변화, 회차, 재시도, 신선도 ----------
+
+class HookLlm:
+    """select가 불리는 순간(= LLM을 기다리는 동안)에 hook을 실행한다."""
+
+    def __init__(self, hook=None, option="hold"):
+        self.hook, self.option, self.calls, self.orc = hook, option, 0, None
+
+    def select(self, context, conflicts):
+        self.calls += 1
+        if self.hook:
+            self.hook(self.orc)
+        return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id=self.option, reason="r")
+                                     for c in conflicts], summary="s")
+
+
+def make_hooked(hook):
+    llm = HookLlm(hook)
+    orc, sent, said, clock = make(llm)
+    llm.orc = orc
+    return orc, sent, said, clock, llm
+
+
+def start_cleaning_at_t6():
+    home = DemoHome()
+    orc, sent, said, clock = make()
+    orc.on_snapshot(home.snapshot("t0"))
+    s6 = home.snapshot("t6")
+    orc.on_snapshot(s6)
+    return orc, sent, clock, s6, next(c for c in sent if c.action == "start_cleaning")
+
+
+def test_accepted_cleaning_is_not_expired_by_time():
+    orc, sent, clock, _, cmd = start_cleaning_at_t6()
+    orc.on_device_result(result(cmd, "accepted"))
+    clock.t += 3600
+    orc.tick()
+    assert orc.pending[cmd.command_id].status == "accepted"
+    orc.on_device_result(result(cmd, "completed"))
+    assert "room1" in orc.hist.last_cleaned_at
+
+
+def test_unacknowledged_cleaning_is_not_resent_and_is_confirmed_by_state():
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
+    clock.t += 31
+    orc.tick()
+    assert orc.pending[cmd.command_id].status == "unknown"
+    n = len(sent)
+    orc.on_snapshot(modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + 1),
+                                             r["rooms"][0]["light"].update(level="DIM"))))
+    assert not any(c.action == "start_cleaning" for c in sent[n:])        # 다시 보내지 않음
+    cleaning = modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + 2), next(
+        d for d in r["devices"] if d["device_id"] == "vacuum_01")["state"].update(status="cleaning", target_room_ids=["room1"])))
+    orc.on_snapshot(cleaning)
+    assert orc.pending[cmd.command_id].status == "in_progress"
+
+
+def test_completion_is_recorded_on_the_original_occurrence():
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
+    orc.on_snapshot(modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + 5),
+                                             r["routines"][0].update(occurrence_id="next_occurrence"))))
+    orc.on_device_result(result(cmd, "completed"))
+    assert orc.hist.done_rooms == {"daily_clean_20261113_evening": {"room1"}}
+
+
+def test_direct_command_during_llm_wait_is_not_overwritten():
+    def hook(orc):
+        orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="에어컨 꺼줘", confidence=0.9))
+    orc, sent, *_ = make_hooked(hook)
+    orc.on_snapshot(DemoHome().snapshot("t1"))
+    powers = [c.params["power"] for c in sent if c.device_id == "ac_room1" and c.action == "set_power"]
+    assert powers == ["off"]
+
+
+def test_pause_during_llm_wait_blocks_plan_and_resume_decides_immediately():
+    orc, sent, *_ = make_hooked(lambda o: o.control("pause"))
+    orc.on_snapshot(DemoHome().snapshot("t1"))
+    assert sent == []
+    orc.llm.hook = None
+    d = orc.control("resume")
+    assert d is not None and d.commands
+
+
+def test_resume_waits_for_fresh_state_when_snapshot_is_old():
+    orc, sent, said, clock = make()
+    orc.control("pause")
+    orc.on_snapshot(DemoHome().snapshot("t0"))
+    clock.t += 121
+    assert orc.control("resume") is None and sent == []
+
+
+def test_reset_during_llm_wait_discards_the_plan():
+    orc, sent, *_ = make_hooked(lambda o: o.reset(SESSION, "replay"))
+    assert orc.on_snapshot(DemoHome().snapshot("t1")) is None
+    assert sent == []
+
+
+def test_session_change_during_llm_wait_discards_the_plan():
+    other = modified(DemoHome().snapshot("t0"), lambda r: r.update(world_session_id="other-session"))
+    orc, sent, *_ = make_hooked(lambda o: (setattr(o.llm, "hook", None), o.on_snapshot(other)))
+    orc.on_snapshot(DemoHome().snapshot("t1"))
+    assert all(c.world_session_id == "other-session" for c in sent)
+
+
+def test_transient_failure_retries_with_limit_and_rejection_does_not():
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
+
+    def again(minutes, rev):
+        snap = modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + rev),
+                                       r.update(as_of=(s6.as_of + timedelta(minutes=minutes)).isoformat()),
+                                       r["rooms"][0]["light"].update(level="DIM" if rev % 2 else "BRIGHT")))
+        n = len(sent)
+        orc.on_snapshot(snap)
+        return [c for c in sent[n:] if c.action == "start_cleaning"]
+
+    failed = DeviceResult(world_session_id=cmd.world_session_id, command_id=cmd.command_id, device_id=cmd.device_id,
+                          status="failed", timestamp=cmd.issued_at, reason="busy")
+    orc.on_device_result(failed)
+    assert again(1, 1) == []                    # 간격 전에는 다시 보내지 않음
+    retry = again(6, 2)
+    assert len(retry) == 1                      # 5분 뒤 한 번 재시도
+    orc.on_device_result(DeviceResult(world_session_id=cmd.world_session_id, command_id=retry[0].command_id,
+                                      device_id=cmd.device_id, status="rejected", timestamp=cmd.issued_at))
+    assert again(30, 3) == []                   # 거절은 자동 반복하지 않음
+
+
+def test_cached_choice_is_dropped_when_preference_changes():
+    llm = FakeLlm("hold")
+    home = DemoHome()
+    orc, _, _, _ = make(llm)
+    s1 = home.snapshot("t1")
+    orc.on_snapshot(s1)
+    orc.on_snapshot(modified(s1, lambda r: (r.update(world_revision=r["world_revision"] + 1),
+                                             r["profiles"][0].update(quiet_rest=False))))
+    assert llm.calls == 2
+
+
+def test_direct_command_is_refused_when_state_is_old():
+    orc, sent, said, clock = make()
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    clock.t += 121
+    d = orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="불 켜줘", confidence=0.9))
+    assert d.commands == [] and d.rejected[0].reason == "SNAPSHOT_STALE"
