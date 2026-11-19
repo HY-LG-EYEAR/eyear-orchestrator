@@ -41,6 +41,8 @@ class History:
     last_cleaned_at: dict[str, datetime] = field(default_factory=dict)
     occupied_s_since_clean: dict[str, float] = field(default_factory=dict)
     done_rooms: dict[str, set[str]] = field(default_factory=dict)  # occurrence_id → 청소 완료한 방
+    # occurrence_id → 청소기를 도크로 돌려보낼 때 남아 있던 방. 완료 결과가 올 때까지 보존한다
+    backlog: dict[str, list[str]] = field(default_factory=dict)
     last_as_of: datetime | None = None
 
     def observe(self, snap: WorldSnapshot) -> None:
@@ -60,6 +62,12 @@ class History:
 
 def people_in(snap: WorldSnapshot, room_id: str):
     return [p for p in snap.people if p.room_id == room_id]
+
+
+def room_clear(snap: WorldSnapshot, room_id: str) -> bool:
+    """확실히 빈 방인가: 재실 EMPTY이고 근거가 지금(current) 것."""
+    r = snap.room(room_id)
+    return r is not None and r.occupancy.state == "EMPTY" and r.occupancy.evidence.freshness == "current"
 
 
 def cleaning_rows(snap: WorldSnapshot, hist: History) -> list[tuple[str, dict]]:

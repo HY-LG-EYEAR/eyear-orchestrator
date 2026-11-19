@@ -1,5 +1,5 @@
 {
-  "plan_id": "18c41612-463a-4463-b33f-eb8619fc97e6",
+  "plan_id": "49e99548-c3c0-477b-8e62-25ef04391ba5",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 101,
   "decided_at": "2026-11-13T21:00:00+09:00",
@@ -11,8 +11,19 @@
       "world_revision": 101,
       "actions": [],
       "restrictions": [],
+      "keeps": [
+        {
+          "device_id": "vacuum_01",
+          "room_ids": [
+            "room2",
+            "room1"
+          ],
+          "reason": "ROUTINE_IN_PROGRESS:daily_clean_20261113_evening"
+        }
+      ],
       "questions": [],
       "scores": {
+        "urgency:room2": 0.38,
         "urgency:room1": 0.38
       },
       "reasons": [],
@@ -24,6 +35,7 @@
       "world_revision": 101,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "disturb:washer_01:living": 0.186
@@ -62,6 +74,7 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "target:ac_living": 26.0
@@ -75,6 +88,7 @@
       "world_revision": 101,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {},
       "reasons": [],
@@ -113,8 +127,8 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "4a215923-12af-4aeb-b299-0600a351de46",
-      "plan_id": "18c41612-463a-4463-b33f-eb8619fc97e6",
+      "command_id": "a4a63699-0e17-4572-a666-bf33efce5d28",
+      "plan_id": "49e99548-c3c0-477b-8e62-25ef04391ba5",
       "issued_at": "2026-11-13T21:00:00+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 101,
@@ -130,8 +144,8 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "5484dd25-3761-47c8-9e0a-1e9eba06bf7d",
-      "plan_id": "18c41612-463a-4463-b33f-eb8619fc97e6",
+      "command_id": "d1c3c356-7f12-47ed-836c-38945bcea3ba",
+      "plan_id": "49e99548-c3c0-477b-8e62-25ef04391ba5",
       "issued_at": "2026-11-13T21:00:00+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 101,
@@ -147,8 +161,8 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "880159c4-ae52-4781-9ed5-b5911e16bd4f",
-      "plan_id": "18c41612-463a-4463-b33f-eb8619fc97e6",
+      "command_id": "660bfe80-1e9a-472e-8381-4a8941676c3d",
+      "plan_id": "49e99548-c3c0-477b-8e62-25ef04391ba5",
       "issued_at": "2026-11-13T21:00:00+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 101,
@@ -165,5 +179,6 @@
   ],
   "rejected": [],
   "speech": [],
-  "summary": ""
+  "summary": "",
+  "undelivered": []
 }

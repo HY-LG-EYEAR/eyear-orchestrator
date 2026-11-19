@@ -1,14 +1,14 @@
 {
-  "plan_id": "243a5dd8-946e-4655-a7ee-61131d22ecdb",
+  "plan_id": "b2bef2d0-78b9-49fc-856e-95870c79dbf3",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-  "world_revision": 116,
+  "world_revision": 117,
   "decided_at": "2026-11-13T22:55:20+09:00",
   "trigger": "snapshot",
   "proposals": [
     {
       "agent": "cleaning",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 116,
+      "world_revision": 117,
       "actions": [
         {
           "device_id": "vacuum_01",
@@ -23,8 +23,10 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
+        "urgency:room2": 0.076,
         "urgency:room1": 0.464
       },
       "reasons": [],
@@ -33,7 +35,7 @@
     {
       "agent": "noise",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 116,
+      "world_revision": 117,
       "actions": [
         {
           "device_id": "washer_01",
@@ -45,6 +47,7 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "disturb:washer_01:living": 0.16
@@ -55,7 +58,7 @@
     {
       "agent": "temperature",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 116,
+      "world_revision": 117,
       "actions": [
         {
           "device_id": "ac_room1",
@@ -67,6 +70,7 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "target:ac_living": 26.0
@@ -77,9 +81,10 @@
     {
       "agent": "lighting",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 116,
+      "world_revision": 117,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {},
       "reasons": [],
@@ -121,11 +126,11 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "b53c2cd6-f5fd-4739-b24f-2c7ae5f08e48",
-      "plan_id": "243a5dd8-946e-4655-a7ee-61131d22ecdb",
+      "command_id": "d2f56171-c665-4107-a463-159c892cf41c",
+      "plan_id": "b2bef2d0-78b9-49fc-856e-95870c79dbf3",
       "issued_at": "2026-11-13T22:55:20+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "based_on_revision": 116,
+      "based_on_revision": 117,
       "device_id": "vacuum_01",
       "action": "start_cleaning",
       "params": {
@@ -141,11 +146,11 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "4df8d00b-7d67-4e71-876e-4731a523eb78",
-      "plan_id": "243a5dd8-946e-4655-a7ee-61131d22ecdb",
+      "command_id": "4876e87e-c09e-4f8d-b3aa-27e7c54fc54b",
+      "plan_id": "b2bef2d0-78b9-49fc-856e-95870c79dbf3",
       "issued_at": "2026-11-13T22:55:20+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "based_on_revision": 116,
+      "based_on_revision": 117,
       "device_id": "washer_01",
       "action": "set_mode",
       "params": {
@@ -158,11 +163,11 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "32342e68-ae7d-4fa4-ae9b-d483fe9686eb",
-      "plan_id": "243a5dd8-946e-4655-a7ee-61131d22ecdb",
+      "command_id": "f243c151-a685-4208-ac94-796fdb8f143c",
+      "plan_id": "b2bef2d0-78b9-49fc-856e-95870c79dbf3",
       "issued_at": "2026-11-13T22:55:20+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "based_on_revision": 116,
+      "based_on_revision": 117,
       "device_id": "ac_room1",
       "action": "set_power",
       "params": {
@@ -176,5 +181,6 @@
   ],
   "rejected": [],
   "speech": [],
-  "summary": ""
+  "summary": "",
+  "undelivered": []
 }

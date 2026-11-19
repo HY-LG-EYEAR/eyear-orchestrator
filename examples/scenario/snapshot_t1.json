@@ -536,9 +536,11 @@
         "freshness": "current"
       },
       "state": {
-        "status": "docked",
+        "status": "cleaning",
         "mode": "normal",
-        "target_room_ids": [],
+        "target_room_ids": [
+          "room1"
+        ],
         "dock_room_id": "kitchen"
       },
       "capabilities": {
@@ -550,7 +552,6 @@
           "set_mode"
         ],
         "modes": [
-          "quiet",
           "normal"
         ],
         "temperature": null,
@@ -736,10 +737,11 @@
       "occurrence_id": "daily_clean_20261113_evening",
       "device_id": "vacuum_01",
       "room_ids": [
+        "room2",
         "room1"
       ],
       "due": true,
-      "requested_at": "2026-11-13T21:02:00+09:00",
+      "requested_at": "2026-11-13T20:50:00+09:00",
       "deadline_at": "2026-11-13T23:02:00+09:00"
     }
   ],

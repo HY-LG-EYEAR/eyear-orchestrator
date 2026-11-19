@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from orchestrator import features as F
 from orchestrator.contract import WorldSnapshot
-from orchestrator.schemas import AgentProposal, ProposedAction, Question, Restriction
+from orchestrator.schemas import AgentProposal, KeepPlan, ProposedAction, Question, Restriction
 
 if TYPE_CHECKING:
     from orchestrator.voice import DialogueManager
@@ -126,8 +126,17 @@ def _proposal(ctx: Context, agent: str) -> AgentProposal:
 
 # ---------- 청소 ----------
 
+def remaining_rooms(rt, hist: F.History) -> list[str]:
+    """회차의 남은 방(루틴 순서). 중앙이 청소기를 도크로 돌려보내며 남겨 둔 목록이 있으면 그것을,
+    없으면 루틴 전체를 쓰고, 완료 결과가 온 방은 뺀다."""
+    done = hist.done_rooms.get(rt.occurrence_id, set())
+    return [r for r in hist.backlog.get(rt.occurrence_id, rt.room_ids) if r not in done]
+
+
 def cleaning_agent(ctx: Context) -> AgentProposal:
-    """청소 루틴의 남은 방을 루틴 순서대로 청소하자고 제안한다. 재실 여부는 보지 않는다(소음 에이전트 몫)."""
+    """청소 루틴을 진행하자고 제안한다. 재실 여부는 보지 않는다(소음 에이전트 몫).
+    - 청소기가 이미 청소 중이면: 지금 계획(남은 방 순서) 유지 (명령 없음)
+    - 도크에 있으면: 남은 방을 루틴 순서대로 청소 시작"""
     s, out = ctx.snap, _proposal(ctx, "cleaning")
     rows = F.cleaning_rows(s, ctx.hist)
     scores = ctx.models.clean([r for _, r in rows])
@@ -140,10 +149,14 @@ def cleaning_agent(ctx: Context) -> AgentProposal:
         if not _usable(vac) or "start_cleaning" not in vac.capabilities.actions:
             out.reasons.append(f"VACUUM_UNAVAILABLE:{rt.device_id}")
             continue
+        if vac.state.status == "cleaning" and vac.state.target_room_ids:
+            out.keeps.append(KeepPlan(device_id=vac.device_id, room_ids=list(vac.state.target_room_ids),
+                                      reason=f"ROUTINE_IN_PROGRESS:{rt.occurrence_id}"))
+            continue
         if vac.state.status not in ("docked", "idle", "completed"):
             out.reasons.append(f"VACUUM_BUSY:{vac.state.status}")
             continue
-        remaining = [r for r in rt.room_ids if r not in ctx.hist.done_rooms.get(rt.occurrence_id, set())]
+        remaining = remaining_rooms(rt, ctx.hist)
         if not remaining:
             continue
         out.actions.append(ProposedAction(device_id=vac.device_id, action="start_cleaning",
@@ -159,23 +172,33 @@ def noise_agent(ctx: Context) -> AgentProposal:
     occupied = F.occupied_rooms(s)
     room_state = {r.room_id: r.occupancy.state for r in s.rooms}
 
-    # 청소기: 사람이 있거나 재실을 모르는 방에서 청소 시작을 막자고 제안
+    # 청소기: 확실히 빈 방(EMPTY, 신선한 근거)이 아니면 들어가지 않게 한다. 사람 있음과 재실 모름을 같게 본다.
+    def why(r):
+        if room_state.get(r) != "OCCUPIED":
+            return "ROOM_NOT_CONFIRMED_EMPTY"
+        return "ROOM_OCCUPIED_RESTING" if any(x.activity.label == "resting" for x in F.people_in(s, r))             else "ROOM_OCCUPIED"
+
     for d in s.devices:
-        if d.kind != "vacuum":
+        if d.kind != "vacuum" or not _usable(d):
             continue
-        rooms = list(dict.fromkeys(r for rt in s.routines if rt.device_id == d.device_id for r in rt.room_ids))
+        st = d.state
+        if st.status == "cleaning" and st.target_room_ids:
+            # 진행 중인 계획: 다음 목적지에 사람이 있으면 도크로 돌아가 그 방을 미루자고 제안 (청소의 '유지'와 충돌)
+            nxt = st.target_room_ids[0]
+            if not F.room_clear(s, nxt):
+                if room_state.get(nxt) == "OCCUPIED":
+                    p = ctx.models.noise([F.noise_row(s, d, st.mode or "normal", nxt, nxt)])[0]
+                    out.scores[f"disturb:{d.device_id}:{nxt}"] = round(p, 3)
+                out.actions.append(ProposedAction(device_id=d.device_id, action="return_to_dock",
+                                                  reason=f"NEXT_{why(nxt)}:{nxt}"))
+            continue
+        # 도크에서: 비지 않은 방의 청소 시작을 막는다 (중앙은 이 제한을 LLM 없이 그대로 지킨다)
+        rooms = list(dict.fromkeys(r for rt in s.routines if rt.device_id == d.device_id and rt.due
+                                   for r in rt.room_ids))
         for r in rooms:
-            st = room_state.get(r)
-            if st == "OCCUPIED":
-                p = ctx.models.noise([F.noise_row(s, d, "normal", r, r)])[0]
-                out.scores[f"disturb:{d.device_id}:{r}"] = round(p, 3)
-                rest = any(x.activity.label == "resting" for x in F.people_in(s, r))
+            if not F.room_clear(s, r):
                 out.restrictions.append(Restriction(device_id=d.device_id, action="start_cleaning", room_id=r,
-                                                    strength="strong",
-                                                    reason="ROOM_OCCUPIED_RESTING" if rest else "ROOM_OCCUPIED"))
-            elif st == "UNKNOWN":
-                out.restrictions.append(Restriction(device_id=d.device_id, action="start_cleaning", room_id=r,
-                                                    strength="weak", reason="OCCUPANCY_UNKNOWN"))
+                                                    strength="strong", reason=why(r)))
 
     # 세탁기·공기청정기: 영향받는 방에 사람이 있으면 저소음, 이유가 사라지면 원래 모드로
     for d in s.devices:

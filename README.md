@@ -18,8 +18,8 @@ Device adapter ──execution result──▶ World Model ──(HTTP)──▶
 **How the central layer decides**
 1. All four agents read the same snapshot and make proposals. Agents never send commands themselves.
 2. **Proposals that do not conflict are accepted as they are.**
-3. A conflict is a different value proposed for the same device, or an action blocked by another agent's restriction. For each conflict, the options are built mechanically and **the LLM chooses one of them.** The LLM cannot create new commands.
-4. If the LLM is unavailable or fails, a deterministic fallback chooses the option that respects the restrictions. A choice is reused for up to 15 minutes only while the same conflict continues and the related preferences, people, restrictions, routines, and deadline band are unchanged.
+3. A conflict is either (a) the vacuum's route: the Cleaning agent proposes keeping the plan that is already running, and the Noise agent proposes `return_to_dock` because the vacuum's next room is not confirmed empty; or (b) a different value proposed for the same device and action. **The options are exactly the agents' proposals, and the LLM chooses one of them.** The LLM cannot create new commands, and the central layer does not add options of its own.
+4. If the LLM is unavailable or fails, a deterministic fallback chooses: return to the dock for the route conflict, no change for a value conflict. A choice is reused for up to 15 minutes only while the same conflict continues and the related preferences, people, restrictions, routines, and deadline band are unchanged.
 5. Every command is validated before it is sent: supported action and mode, temperature range and step, fresh device state, online state, manual override, user restrictions, and duplicates of commands still in progress.
 
 Notes
@@ -30,7 +30,8 @@ Notes
 - Failures with a known transient reason (`busy`, `timeout`, `temporarily_unavailable`) are retried after 5 minutes, at most twice, even if nothing else in the home changes. The retry is evaluated when the next valid snapshot arrives after the 5 minutes (the World Model sends one at least every 30 seconds); there is no separate timer. Rejections and other failures are not repeated automatically.
 - Delivery is recorded in three stages: **published** (the transport accepted the message; listed in `commands`), **accepted** by the device (result event), and **completed** (result event). If the transport refuses a publish immediately, the command is listed in `rejected` with `PUBLISH_FAILED`, and a refused question appears in `undelivered` and is not treated as waiting for a reply. Refused commands and questions are tried again with the first snapshot at least 10 seconds later, at most 3 times; after a positive sleep answer only the refused actions are repeated. A refused direct voice command does not start the 30-minute manual hold. `GET /v1/speech` marks each utterance with `delivered`.
 - A direct command is refused if the last snapshot is older than 120 seconds.
-- Conflict detection currently covers different values for the same device and action, and cleaning rooms blocked by a noise restriction. Other combinations (for example `start_cleaning` vs. `return_to_dock`) are not yet detected.
+- Cleaning follows the presentation scenario. The vacuum enters a room only when its occupancy is `EMPTY` with current evidence; `OCCUPIED`, `UNKNOWN`, and stale `EMPTY` all count as not empty. When the vacuum is called back to the dock, the rooms still in its list (for example only room1, after room2 was finished) are kept as the remaining work of the same routine occurrence until a `completed` result arrives. While the vacuum is docked and a remaining room is not empty, the start is simply held (`WAIT_UNTIL_EMPTY` in the decision record) without asking the LLM again; when the room is confirmed empty, only the remaining rooms are started. There is no timeout, no reordering of rooms, and no quiet cleaning mode. Rooms the vacuum finishes on its own (it drops them from `target_room_ids`, or stops cleaning without being called back) are recorded as done.
+- What the simulator and World Model must send and accept for this flow (vacuum states, command and result formats, timing at t1) is in [`docs/simulator-alignment.md`](docs/simulator-alignment.md).
 
 Voice
 - Replies to the sleep question count as yes or no only when they are short and clear ("응", "네", "아니", "응 잘게"). Questions, mixed answers, and "어" are treated as ambiguous, which leaves lights and curtains unchanged. Replies are accepted only from the Node and room the question was sent to, and only while the person is still in that room.
@@ -43,7 +44,7 @@ Voice
 
 | Agent | WorldSnapshot fields read | Values remembered by the Orchestrator |
 |---|---|---|
-| Cleaning | `routines[]` (occurrence, room list = cleaning order, `due`, deadline), vacuum `state` / `capabilities` / `online` / `manual_override`, `rooms[].room_type` | Last cleaning time per room, occupied time since the last cleaning |
+| Cleaning | `routines[]` (occurrence, room list = cleaning order, `due`, deadline), vacuum `state` (`status`, `target_room_ids` = remaining rooms in order) / `capabilities` / `online` / `manual_override`, `rooms[].room_type` | Last cleaning time per room, occupied time since the last cleaning, rooms done and rooms remaining per routine occurrence |
 | Noise | `rooms[].occupancy`, `people[].activity` (label, confirmed), `profile_id`, `profiles[].quiet_rest/quiet_meeting`, `room_influence`, washer / vacuum / purifier state and mode | Devices whose mode was changed for quiet protection, and the rooms that caused it |
 | Temperature | `people[]` in the AC's room (`profile_id`, `position`), `profiles[].preferred_min/max_c`, `rooms[].temperature_c`, AC `state` / `capabilities.temperature` / `airflow_target` | — |
 | Lighting | `people[].activity` (resting, confirmed, stable_for_s), `rooms[].light`, light and curtain state, `nodes[].supports_speak` | Rest episodes and question state |
@@ -116,6 +117,7 @@ orchestrator/   contract.py (input contract)  schemas.py (output formats)  featu
 dataset/        simulate.py (household simulator)  train.py (training and evaluation)  samples/ (200 rows per table)
 models/         the 4 trained models and model_card.json
 examples/       snapshot_t2.json (contract example), scenario/ (t0–t7 input snapshots and decision records)
+docs/           simulator-alignment.md (vacuum states, commands and results the simulator must match)
 tests/
 ```
 

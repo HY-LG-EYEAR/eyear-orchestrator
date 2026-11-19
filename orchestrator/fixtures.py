@@ -70,7 +70,7 @@ def _caps(actions, modes=(), temp=None, airflow=None) -> dict:
 
 
 CAPS = {
-    "vacuum": _caps(["start_cleaning", "pause_cleaning", "resume_cleaning", "return_to_dock", "set_mode"], ["quiet", "normal"]),
+    "vacuum": _caps(["start_cleaning", "pause_cleaning", "resume_cleaning", "return_to_dock", "set_mode"], ["normal"]),
     "washer": _caps(["set_mode"], ["normal", "low_noise"]),
     "ac": _caps(["set_power", "set_mode", "set_target_temperature", "set_airflow_target"], ["cool"],
                 {"min_c": 18, "max_c": 30, "step_c": 1}, "person"),
@@ -128,13 +128,22 @@ def at(hms: str) -> datetime:
 
 
 class DemoHome:
-    """World Model + 기기 어댑터 흉내. 명령을 받으면 기기 상태를 바꾸고 completed 결과를 돌려준다."""
+    """World Model + 기기 어댑터 흉내. 명령을 받으면 기기 상태를 바꾸고 결과를 돌려준다.
+
+    청소기 (발표 시나리오, 시뮬레이터와 맞출 동작):
+    - t0: 저녁 청소 회차 진행 중, 방2 청소 중, 남은 방 [방2, 방1]
+    - t1 직전: 방2 완료 → 남은 방 [방1], 아직 방1에 들어가지 않음 (t1 판단은 이 상태로)
+    - return_to_dock: 즉시 completed, 상태 returning (남은 방 목록 비움) → 다음 스냅샷에서 docked
+    - start_cleaning: 즉시 accepted, 상태 cleaning → 다음 스냅샷에서 청소를 마치고 completed, docked
+    그 밖의 기기는 명령을 받으면 바로 상태를 바꾸고 completed를 돌려준다.
+    """
 
     def __init__(self, on_result: Callable[[DeviceResult], None] | None = None):
         self.on_result = on_result
         self.revision = 100
         self.devices = {
-            "vacuum_01": ("kitchen", "vacuum", {"status": "returning", "mode": "normal", "target_room_ids": [], "dock_room_id": "kitchen"}),
+            "vacuum_01": ("kitchen", "vacuum", {"status": "cleaning", "mode": "normal",
+                                                "target_room_ids": ["room2", "room1"], "dock_room_id": "kitchen"}),
             "washer_01": ("laundry", "washer", {"status": "running", "mode": "normal"}),
             "ac_room1": ("room1", "ac", {"power": "off", "mode": "cool", "target_c": 24, "airflow_target_person_id": None}),
             "ac_living": ("living", "ac", {"power": "off", "mode": "cool", "target_c": 27, "airflow_target_person_id": None}),
@@ -143,14 +152,17 @@ class DemoHome:
         }
         self.dev_rev = {k: 1 for k in self.devices}
         self.log: list[DeviceCommand] = []
+        self.cleaning_cmd: DeviceCommand | None = None   # 접수했고 아직 끝나지 않은 청소 명령
 
     # 기기 어댑터 역할
     def send(self, cmd: DeviceCommand) -> None:
         self.log.append(cmd)
         _, kind, st = self.devices[cmd.device_id]
         p = cmd.params
+        status = "completed"
         if cmd.action == "start_cleaning":
             st.update(status="cleaning", target_room_ids=list(p["room_ids"]), mode=p.get("mode", st["mode"]))
+            self.cleaning_cmd, status = cmd, "accepted"    # 완료는 청소를 마친 뒤 (다음 스냅샷)
         elif cmd.action == "return_to_dock":
             st.update(status="returning", target_room_ids=[])
         elif cmd.action == "pause_cleaning":
@@ -169,33 +181,42 @@ class DemoHome:
             st["position_pct"] = p["position_pct"]
         self.dev_rev[cmd.device_id] += 1
         self.revision += 1
+        self._report(cmd, status, st)
+
+    def _report(self, cmd: DeviceCommand, status: str, st: dict) -> None:
         if self.on_result:
             self.on_result(DeviceResult(
                 world_session_id=cmd.world_session_id, world_revision=self.revision, command_id=cmd.command_id,
-                device_id=cmd.device_id, status="completed", timestamp=cmd.issued_at, observed_state=dict(st)))
+                device_id=cmd.device_id, status=status, timestamp=cmd.issued_at, observed_state=dict(st)))
 
-    def finish_cleaning(self) -> list[str]:
-        """청소기가 대상 방 청소를 마쳤다고 표시하고 도크로 돌아오게 한다."""
-        _, _, st = self.devices["vacuum_01"]
-        done = list(st["target_room_ids"])
-        st.update(status="docked", target_room_ids=[])
-        return done
+    def _advance_vacuum(self, step: str) -> None:
+        """스냅샷 사이에 청소기가 한 일 (시뮬레이터 흉내)."""
+        st = self.devices["vacuum_01"][2]
+        before = dict(st)
+        if st["status"] == "returning":
+            st.update(status="docked")
+        elif self.cleaning_cmd is not None and st["status"] == "cleaning":
+            st.update(status="docked", target_room_ids=[])      # 청소를 마치고 도크로 돌아옴
+            cmd, self.cleaning_cmd = self.cleaning_cmd, None
+            self.dev_rev["vacuum_01"] += 1
+            self._report(cmd, "completed", st)
+        elif step != "t0" and st["status"] == "cleaning" and st["target_room_ids"][:1] == ["room2"]:
+            st["target_room_ids"] = st["target_room_ids"][1:]   # 방2 완료, 방1로 가기 전
+        if st != before:
+            self.dev_rev["vacuum_01"] += 1
 
     def _devices(self, t):
         return [device(i, r, k, dict(s), t, self.dev_rev[i]) for i, (r, k, s) in self.devices.items()]
 
     def snapshot(self, step: str) -> WorldSnapshot:
         t, rooms, people, due = STEPS[step]
-        vac = self.devices["vacuum_01"][2]
-        if step != "t0" and vac["status"] == "returning":  # t0에 시작한 도크 복귀는 t1 전에 끝남
-            vac.update(status="docked", target_room_ids=[])
-            self.dev_rev["vacuum_01"] += 1
+        self._advance_vacuum(step)
         self.revision += 1
         nodes = [node("node_room1", "room1", t, self.revision), node("mock_living", "living", t, self.revision),
                  node("mock_room2", "room2", t, self.revision)]
         routine = {"routine_id": "daily_clean", "occurrence_id": "daily_clean_20261113_evening",
-                   "device_id": "vacuum_01", "room_ids": ["room1"], "due": due,
-                   "requested_at": iso(at("21:02:00")) if due else None,
+                   "device_id": "vacuum_01", "room_ids": ["room2", "room1"], "due": due,
+                   "requested_at": iso(at("20:50:00")) if due else None,
                    "deadline_at": iso(at("23:02:00")) if due else None}
         return snapshot(t, self.revision, SESSION, rooms(t), people(t), self._devices(t), PROFILES,
                         [routine], INFLUENCE, nodes, links=LINKS)
@@ -225,7 +246,7 @@ def _people(*makers):
 A_ROOM1 = (2.4, 2.67)
 STEPS = {
     # 이름: (시각, 방 상태, 사람, 청소 루틴 due)
-    "t0": (at("21:00:00"), _rooms("EMPTY", r1_audio="LOUD_NOISE"), _people(_b), False),
+    "t0": (at("21:00:00"), _rooms("EMPTY", r1_audio="LOUD_NOISE"), _people(_b), True),
     "t1": (at("21:02:10"), _rooms("OCCUPIED", r1_audio="LOUD_NOISE"), _people(
         _b, lambda t: person("person_a", "profile_a", "room1", "MEMBER_A", t, "node_room1", 1,
                              motion="ACTIVE", confirmed=False, stable=0, position=(1.4, 2.15))), True),

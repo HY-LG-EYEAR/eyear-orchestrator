@@ -1,31 +1,32 @@
 {
-  "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
+  "plan_id": "f2d0b16c-005a-41ca-8f46-8993a1523bf3",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-  "world_revision": 120,
+  "world_revision": 121,
   "decided_at": "2026-11-13T22:56:10+09:00",
   "trigger": "snapshot",
   "proposals": [
     {
       "agent": "cleaning",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 120,
+      "world_revision": 121,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
+        "urgency:room2": 0.076,
         "urgency:room1": 0.076
       },
-      "reasons": [
-        "VACUUM_BUSY:cleaning"
-      ],
+      "reasons": [],
       "model": "hgb@0.1"
     },
     {
       "agent": "noise",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 120,
+      "world_revision": 121,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "disturb:washer_01:living": 0.203
@@ -36,7 +37,7 @@
     {
       "agent": "temperature",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 120,
+      "world_revision": 121,
       "actions": [
         {
           "device_id": "ac_living",
@@ -56,6 +57,7 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "target:ac_living": 25.0
@@ -66,9 +68,10 @@
     {
       "agent": "lighting",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 120,
+      "world_revision": 121,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {},
       "reasons": [],
@@ -99,11 +102,11 @@
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "43610775-c9c5-42f5-a0c1-c481e3bf868b",
-      "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
+      "command_id": "5f02820b-96f1-4013-8b6f-8d5189cc0cc5",
+      "plan_id": "f2d0b16c-005a-41ca-8f46-8993a1523bf3",
       "issued_at": "2026-11-13T22:56:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "based_on_revision": 120,
+      "based_on_revision": 121,
       "device_id": "ac_living",
       "action": "set_target_temperature",
       "params": {
@@ -116,11 +119,11 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "917f71b8-94f1-412d-81d5-c47c1c2c1cc5",
-      "plan_id": "c2ec02dd-22d2-486b-9ec1-5a7792cdd45b",
+      "command_id": "ac8443a1-2240-4544-9bc5-32d07c67ae95",
+      "plan_id": "f2d0b16c-005a-41ca-8f46-8993a1523bf3",
       "issued_at": "2026-11-13T22:56:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "based_on_revision": 120,
+      "based_on_revision": 121,
       "device_id": "ac_living",
       "action": "set_airflow_target",
       "params": {
@@ -134,5 +137,6 @@
   ],
   "rejected": [],
   "speech": [],
-  "summary": ""
+  "summary": "",
+  "undelivered": []
 }

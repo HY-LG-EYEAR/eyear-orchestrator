@@ -50,6 +50,14 @@ class Restriction(_M):
     reason: str
 
 
+class KeepPlan(_M):
+    """이미 진행 중인 기기 계획을 그대로 두자는 제안 (명령 없음). 예: 청소기가 남은 방으로 계속 감."""
+
+    device_id: str
+    room_ids: list[str]
+    reason: str
+
+
 class Question(_M):
     kind: Literal["sleep_intent"]
     person_id: str
@@ -62,6 +70,7 @@ class AgentProposal(_M):
     world_revision: int
     actions: list[ProposedAction] = Field(default_factory=list)
     restrictions: list[Restriction] = Field(default_factory=list)
+    keeps: list[KeepPlan] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     scores: dict[str, float] = Field(default_factory=dict)
     reasons: list[str] = Field(default_factory=list)

@@ -56,9 +56,13 @@ def test_scenario_matches_demo(models):
     t1 = commands(d, "t1")
     assert ("washer_01", "set_mode", {"mode": "low_noise"}) in t1
     assert ("ac_room1", "set_power", {"power": "on"}) in t1
-    assert not any(c[0] == "vacuum_01" for c in t1)          # 사람이 있는 방1 청소는 보류
+    assert ("vacuum_01", "return_to_dock", {}) in t1             # 방1로 가던 청소기를 도크로
     t1_dec = next(x for s, x in d if s == "t1")
-    assert t1_dec.conflicts and t1_dec.choices[0].option_id == "hold"
+    assert [o.option_id for o in t1_dec.conflicts[0].options] == ["keep_plan", "return_to_dock"]
+    assert t1_dec.choices[0].option_id == "return_to_dock"
+    for s in ("t2", "t2-reply", "t3", "t4", "t5"):             # 방1에 사람이 있는 동안: 보류 유지, 다시 묻지 않음
+        x = next(x for st, x in d if st == s)
+        assert not x.conflicts and not any(c[0] == "vacuum_01" for c in commands(d, s))
     t2 = next(x for s, x in d if s == "t2")
     assert len(t2.speech) == 1 and t2.speech[0].expect_reply   # 질문 한 번
     assert sorted(commands(d, "t2-reply"), key=str) == sorted(
@@ -68,7 +72,7 @@ def test_scenario_matches_demo(models):
     assert commands(d, "t5-voice") == [("light_room1", "set_power", {"power": "on"})]
     assert commands(d, "t5") == []                              # 커튼은 그대로
     t6 = commands(d, "t6")
-    assert ("vacuum_01", "start_cleaning", {"room_ids": ["room1"], "mode": "normal"}) in t6
+    assert ("vacuum_01", "start_cleaning", {"room_ids": ["room1"], "mode": "normal"}) in t6   # 방2는 다시 안 함
     assert ("washer_01", "set_mode", {"mode": "normal"}) in t6
     assert ("ac_room1", "set_power", {"power": "off"}) in t6
     assert commands(d, "t7") == [("ac_living", "set_target_temperature", {"target_c": 25.0}),
@@ -95,19 +99,25 @@ class FakeLlm:
                                      for c in conflicts], summary="테스트")
 
 
-def test_llm_choice_is_used_and_cached():
-    llm = FakeLlm("quiet")
+def test_llm_return_choice_is_used_once_and_kept():
+    llm = FakeLlm("return_to_dock")
     d = run_demo("응.", llm=llm, models=Models(None))
     t1 = next(x for s, x in d if s == "t1")
-    assert t1.arbitration == "llm"
-    assert ("vacuum_01", "start_cleaning", {"room_ids": ["room1"], "mode": "quiet"}) in commands(d, "t1")
-    assert llm.calls <= 3   # 같은 충돌은 다시 묻지 않음
+    assert t1.arbitration == "llm" and ("vacuum_01", "return_to_dock", {}) in commands(d, "t1")
+    assert llm.calls == 1   # 복귀 뒤에는 방1이 빌 때까지 청소 판단을 다시 묻지 않음
+    assert sum(c.action == "return_to_dock" for _, x in d for c in x.commands) == 1
+
+
+def test_llm_keep_plan_sends_no_vacuum_command():
+    d = run_demo("응.", llm=FakeLlm("keep_plan"), models=Models(None))
+    t1 = next(x for s, x in d if s == "t1")
+    assert t1.arbitration == "llm" and not any(c[0] == "vacuum_01" for c in commands(d, "t1"))
 
 
 def test_invalid_llm_choice_falls_back():
     d = run_demo("응.", llm=FakeLlm("no_such_option"), models=Models(None))
     t1 = next(x for s, x in d if s == "t1")
-    assert t1.arbitration == "fallback" and t1.choices[0].option_id == "hold"
+    assert t1.arbitration == "fallback" and t1.choices[0].option_id == "return_to_dock"
 
 
 def test_value_conflict_and_fallback():
@@ -118,7 +128,7 @@ def test_value_conflict_and_fallback():
                       actions=[ProposedAction(device_id="ac_room1", action="set_target_temperature", params={"target_c": 24})])
     b = AgentProposal(agent="noise", world_session_id="s", world_revision=1,
                       actions=[ProposedAction(device_id="ac_room1", action="set_target_temperature", params={"target_c": 26})])
-    accepted, conflicts = find_conflicts([a, b], snap)
+    accepted, conflicts, _ = find_conflicts([a, b], snap)
     assert not accepted and len(conflicts) == 1 and len(conflicts[0].options) == 3
     assert fallback_choice(conflicts[0]).option_id == "hold"
 
@@ -206,11 +216,7 @@ def result(cmd, status, **kw):
 
 
 def test_accepted_then_completed_records_cleaning():
-    home = DemoHome()
-    orc, sent, _, _ = make()
-    orc.on_snapshot(home.snapshot("t0"))
-    orc.on_snapshot(home.snapshot("t6"))
-    cmd = next(c for c in sent if c.action == "start_cleaning")
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
     orc.on_device_result(result(cmd, "accepted"))
     assert cmd.command_id in orc.pending
     orc.on_device_result(result(cmd, "completed"))
@@ -218,11 +224,7 @@ def test_accepted_then_completed_records_cleaning():
 
 
 def test_result_with_wrong_device_or_session_is_ignored():
-    home = DemoHome()
-    orc, sent, _, _ = make()
-    orc.on_snapshot(home.snapshot("t0"))
-    orc.on_snapshot(home.snapshot("t6"))
-    cmd = next(c for c in sent if c.action == "start_cleaning")
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
     orc.on_device_result(result(cmd, "completed", device="washer_01"))
     orc.on_device_result(result(cmd, "completed", session="other"))
     assert "room1" not in orc.hist.last_cleaned_at
@@ -262,7 +264,7 @@ def test_decision_key_sees_temperature_freshness_and_deadline():
 
 
 def test_cached_choice_is_not_reused_when_deadline_nears():
-    llm = FakeLlm("hold")
+    llm = FakeLlm("keep_plan")
     home = DemoHome()
     orc, _, _, _ = make(llm)
     orc.on_snapshot(home.snapshot("t1"))
@@ -341,7 +343,7 @@ def test_broken_model_file_falls_back_to_rules(tmp_path):
 class HookLlm:
     """select가 불리는 순간(= LLM을 기다리는 동안)에 hook을 실행한다."""
 
-    def __init__(self, hook=None, option="hold"):
+    def __init__(self, hook=None, option="return_to_dock"):
         self.hook, self.option, self.calls, self.orc = hook, option, 0, None
 
     def select(self, context, conflicts):
@@ -359,13 +361,23 @@ def make_hooked(hook):
     return orc, sent, said, clock, llm
 
 
-def start_cleaning_at_t6():
+def play_until(step, send=None):
+    """t0부터 step까지 재생. 명령은 sent에 기록하고 DemoHome에도 반영한다(결과는 보내지 않음)."""
     home = DemoHome()
     orc, sent, said, clock = make()
-    orc.on_snapshot(home.snapshot("t0"))
-    s6 = home.snapshot("t6")
-    orc.on_snapshot(s6)
-    return orc, sent, clock, s6, next(c for c in sent if c.action == "start_cleaning")
+    orc.send_command = send or (lambda c: (sent.append(c), home.send(c)))
+    snaps = {}
+    for s in ("t0", "t1", "t2", "t3", "t4", "t5", "t6"):
+        snaps[s] = home.snapshot(s)
+        orc.on_snapshot(snaps[s])
+        if s == step:
+            break
+    return orc, sent, clock, snaps, home
+
+
+def start_cleaning_at_t6():
+    orc, sent, clock, snaps, _ = play_until("t6")
+    return orc, sent, clock, snaps["t6"], next(c for c in sent if c.action == "start_cleaning")
 
 
 def test_accepted_cleaning_is_not_expired_by_time():
@@ -398,7 +410,8 @@ def test_completion_is_recorded_on_the_original_occurrence():
     orc.on_snapshot(modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + 5),
                                              r["routines"][0].update(occurrence_id="next_occurrence"))))
     orc.on_device_result(result(cmd, "completed"))
-    assert orc.hist.done_rooms == {"daily_clean_20261113_evening": {"room1"}}
+    assert set(orc.hist.done_rooms) == {"daily_clean_20261113_evening"}
+    assert "room1" in orc.hist.done_rooms["daily_clean_20261113_evening"]
 
 
 def test_direct_command_during_llm_wait_is_not_overwritten():
@@ -463,7 +476,7 @@ def test_transient_failure_retries_with_limit_and_rejection_does_not():
 
 
 def test_cached_choice_is_dropped_when_preference_changes():
-    llm = FakeLlm("hold")
+    llm = FakeLlm("keep_plan")
     home = DemoHome()
     orc, _, _, _ = make(llm)
     s1 = home.snapshot("t1")
@@ -626,7 +639,7 @@ def test_mqtt_direct_commands_run_while_llm_waits_and_are_not_overwritten():
     class BlockingLlm:
         def select(self, context, conflicts):
             release.wait(5)
-            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="hold", reason="r")
+            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="return_to_dock", reason="r")
                                          for c in conflicts], summary="s")
 
     orc, sent, said, _ = make(BlockingLlm())
@@ -730,11 +743,11 @@ def test_mqtt_reply_worker_waiting_for_llm_does_not_delay_direct_command():
             entered.set()
             release.wait(5)
             order.append("llm returned")
-            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="hold", reason="r")
+            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="keep_plan", reason="r")
                                          for c in conflicts], summary="s")
 
-    orc, sent, said, _ = make()
-    orc.on_snapshot(DemoHome().snapshot("t2"))          # 질문 발행 (LLM 없이 fallback)
+    orc, sent, said, _ = make(FakeLlm("keep_plan"))     # 청소기는 방1로 계속 감 → 충돌이 남음
+    orc.on_snapshot(DemoHome().snapshot("t2"))          # 질문 발행
     q = said[-1][1]
     orc.llm, orc.memo = BlockingLlm(), {}               # 대답 판단에서 LLM을 부르게 함
     original = orc.on_voice_command
@@ -759,3 +772,81 @@ def test_mqtt_reply_worker_waiting_for_llm_does_not_delay_direct_command():
         th.Event().wait(0.1)
     bridge._stop.set()
     assert order[:2] == ["command", "llm returned"]
+
+
+# ---------- 발표 시나리오: 진행 중 청소 계획 유지 vs 도크 복귀, 같은 회차 보류 ----------
+
+def vacuum_cmds(sent, n=0):
+    return [(c.action, c.params) for c in sent[n:] if c.device_id == "vacuum_01"]
+
+
+def test_t1_is_decided_with_room1_as_next_destination_after_room2():
+    home = DemoHome()
+    home.snapshot("t0")
+    vac = home.snapshot("t1").device("vacuum_01").state
+    assert vac.status == "cleaning" and vac.target_room_ids == ["room1"]
+
+
+@pytest.mark.parametrize("occupancy", ["OCCUPIED", "UNKNOWN", "EMPTY_STALE"])
+def test_hold_is_kept_without_asking_llm_while_room1_is_not_confirmed_empty(occupancy):
+    llm = FakeLlm("return_to_dock")
+    home = DemoHome()
+    orc, sent, _, _ = make(llm)
+    orc.send_command = lambda c: (sent.append(c), home.send(c))
+    orc.on_snapshot(home.snapshot("t0"))
+    orc.on_snapshot(home.snapshot("t1"))
+    assert vacuum_cmds(sent) == [("return_to_dock", {})] and llm.calls == 1
+    s6 = home.snapshot("t6")                                   # 청소기는 도크, A는 나간 상태를 바꿔 본다
+
+    def change(r):
+        occ = r["rooms"][0]["occupancy"]
+        if occupancy == "EMPTY_STALE":
+            occ["evidence"]["freshness"] = "stale"
+        else:
+            occ.update(state=occupancy, confidence=None if occupancy == "UNKNOWN" else 0.9)
+            if occupancy == "UNKNOWN":
+                occ["evidence"] = {"observed_at": None, "source": "unknown", "node_ids": [], "freshness": "unavailable"}
+    d = orc.on_snapshot(modified(s6, change))
+    assert vacuum_cmds(sent) == [("return_to_dock", {})] and llm.calls == 1
+    assert any(r.reason.startswith("WAIT_UNTIL_EMPTY:room1") for r in d.rejected) and not d.conflicts
+
+
+def test_return_is_not_asked_again_before_vacuum_state_updates():
+    llm = FakeLlm("return_to_dock")
+    home = DemoHome()
+    orc, sent, _, _ = make(llm)
+    orc.on_snapshot(home.snapshot("t0"))
+    s1 = home.snapshot("t1")
+    orc.on_snapshot(s1)
+    orc.on_device_result(result(next(c for c in sent if c.action == "return_to_dock"), "completed"))
+    d = orc.on_snapshot(later(home.snapshot("t2"), 0, 0))     # A가 쉬기 시작, 청소기 상태는 아직 갱신 안 됨
+    assert llm.calls == 1 and not d.conflicts
+    assert vacuum_cmds(sent) == [("return_to_dock", {})]
+
+
+def test_room1_only_restarts_and_room2_is_never_added_even_after_failed_publish():
+    home = DemoHome()
+    orc, sent, clock, snaps, _ = play_until("t5")
+    occ = "daily_clean_20261113_evening"
+    assert orc.hist.backlog[occ] == ["room1"] and "room2" in orc.hist.done_rooms[occ]
+    refused = []
+    orc.send_command = lambda c: refused.append(c) or False if c.action == "start_cleaning" else sent.append(c)
+    s6 = DemoHome().snapshot("t6")
+    s6 = modified(snaps["t5"], lambda r: (r.update(world_revision=r["world_revision"] + 1, as_of=s6.as_of.isoformat()),
+                                          r.update(rooms=json.loads(s6.model_dump_json())["rooms"],
+                                                   people=json.loads(s6.model_dump_json())["people"])))
+    d = orc.on_snapshot(s6)
+    assert [c.params["room_ids"] for c in refused] == [["room1"]]
+    assert any(r.reason == "PUBLISH_FAILED" for r in d.rejected) and orc.hist.backlog[occ] == ["room1"]
+    orc.send_command = sent.append
+    n = len(sent)
+    orc.on_snapshot(later(s6, 1, 11))                           # 재시도 간격 뒤
+    retry = [c for c in sent[n:] if c.action == "start_cleaning"]
+    assert [c.params["room_ids"] for c in retry] == [["room1"]]
+    orc.on_device_result(result(retry[0], "accepted"))
+    orc.on_snapshot(later(s6, 2, 30))
+    assert orc.hist.backlog[occ] == ["room1"]                   # 완료 결과 전까지 남은 작업 보존
+    orc.on_device_result(result(retry[0], "completed"))
+    n = len(sent)
+    orc.on_snapshot(later(s6, 3, 60))
+    assert not any(c.action == "start_cleaning" for c in sent[n:])   # 회차 끝, 방2를 다시 시작하지 않음

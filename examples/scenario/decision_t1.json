@@ -1,5 +1,5 @@
 {
-  "plan_id": "c684441a-1634-4674-b3c9-14d1acedaa3e",
+  "plan_id": "3fe06083-4d92-4c4f-9f76-ed0406b8d0d8",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
   "world_revision": 105,
   "decided_at": "2026-11-13T21:02:10+09:00",
@@ -9,22 +9,20 @@
       "agent": "cleaning",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "world_revision": 105,
-      "actions": [
+      "actions": [],
+      "restrictions": [],
+      "keeps": [
         {
           "device_id": "vacuum_01",
-          "action": "start_cleaning",
-          "params": {
-            "room_ids": [
-              "room1"
-            ],
-            "mode": "normal"
-          },
-          "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+          "room_ids": [
+            "room1"
+          ],
+          "reason": "ROUTINE_IN_PROGRESS:daily_clean_20261113_evening"
         }
       ],
-      "restrictions": [],
       "questions": [],
       "scores": {
+        "urgency:room2": 0.08,
         "urgency:room1": 0.358
       },
       "reasons": [],
@@ -36,6 +34,12 @@
       "world_revision": 105,
       "actions": [
         {
+          "device_id": "vacuum_01",
+          "action": "return_to_dock",
+          "params": {},
+          "reason": "NEXT_ROOM_OCCUPIED:room1"
+        },
+        {
           "device_id": "washer_01",
           "action": "set_mode",
           "params": {
@@ -44,15 +48,8 @@
           "reason": "NEIGHBOR_OCCUPIED:room1"
         }
       ],
-      "restrictions": [
-        {
-          "device_id": "vacuum_01",
-          "action": "start_cleaning",
-          "room_id": "room1",
-          "strength": "strong",
-          "reason": "ROOM_OCCUPIED"
-        }
-      ],
+      "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "disturb:vacuum_01:room1": 0.817,
@@ -85,6 +82,7 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "target:ac_room1": 24.0,
@@ -99,6 +97,7 @@
       "world_revision": 105,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {},
       "reasons": [],
@@ -129,60 +128,40 @@
         "person_id": "person_a"
       },
       "reason": "PREFERS_COOLER"
+    },
+    {
+      "device_id": "vacuum_01",
+      "action": "return_to_dock",
+      "params": {},
+      "reason": "NEXT_ROOM_OCCUPIED:room1"
     }
   ],
   "conflicts": [
     {
-      "conflict_id": "vacuum_01:start_cleaning",
+      "conflict_id": "vacuum_01:route",
       "device_id": "vacuum_01",
-      "description": "청소 제안 ['room1']가 소음 제한과 겹침 [room1:ROOM_OCCUPIED(strong)]",
+      "description": "청소기 다음 목적지 room1: ROOM_OCCUPIED. 계획 유지 vs 도크 복귀",
       "options": [
         {
-          "option_id": "original",
-          "summary": "제안대로 ['room1'] 청소(normal)",
-          "actions": [
-            {
-              "device_id": "vacuum_01",
-              "action": "start_cleaning",
-              "params": {
-                "room_ids": [
-                  "room1"
-                ],
-                "mode": "normal"
-              },
-              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
-            }
-          ],
-          "deferred_rooms": [],
-          "from_agents": [
-            "cleaning"
-          ]
-        },
-        {
-          "option_id": "quiet",
-          "summary": "['room1']를 저소음으로 청소",
-          "actions": [
-            {
-              "device_id": "vacuum_01",
-              "action": "start_cleaning",
-              "params": {
-                "room_ids": [
-                  "room1"
-                ],
-                "mode": "quiet"
-              },
-              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
-            }
-          ],
-          "deferred_rooms": [],
-          "from_agents": [
-            "cleaning"
-          ]
-        },
-        {
-          "option_id": "hold",
-          "summary": "청소를 모두 미룸 ['room1']",
+          "option_id": "keep_plan",
+          "summary": "계획 유지: 남은 방 ['room1'] 순서대로 계속 청소 (room1에 들어감)",
           "actions": [],
+          "deferred_rooms": [],
+          "from_agents": [
+            "cleaning"
+          ]
+        },
+        {
+          "option_id": "return_to_dock",
+          "summary": "도크로 복귀해 대기: room1이 확실히 빌 때까지 같은 회차의 남은 방 보류",
+          "actions": [
+            {
+              "device_id": "vacuum_01",
+              "action": "return_to_dock",
+              "params": {},
+              "reason": "NEXT_ROOM_OCCUPIED:room1"
+            }
+          ],
           "deferred_rooms": [
             "room1"
           ],
@@ -195,17 +174,17 @@
   ],
   "choices": [
     {
-      "conflict_id": "vacuum_01:start_cleaning",
-      "option_id": "hold",
-      "reason": "FALLBACK_RESPECT_RESTRICTIONS"
+      "conflict_id": "vacuum_01:route",
+      "option_id": "return_to_dock",
+      "reason": "FALLBACK_AVOID_OCCUPIED_ROOM"
     }
   ],
   "arbitration": "fallback",
   "commands": [
     {
       "schema_version": "2.0",
-      "command_id": "589e6274-6afe-45fe-98a4-bc1caf975dbe",
-      "plan_id": "c684441a-1634-4674-b3c9-14d1acedaa3e",
+      "command_id": "88cb105e-ec8b-46d1-8fdc-c26956694fd1",
+      "plan_id": "3fe06083-4d92-4c4f-9f76-ed0406b8d0d8",
       "issued_at": "2026-11-13T21:02:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 105,
@@ -221,8 +200,8 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "e1dc17a0-e30a-46fe-8932-f2a9c4b08c7c",
-      "plan_id": "c684441a-1634-4674-b3c9-14d1acedaa3e",
+      "command_id": "095d4041-d3a5-4dc6-affb-402af892cfe2",
+      "plan_id": "3fe06083-4d92-4c4f-9f76-ed0406b8d0d8",
       "issued_at": "2026-11-13T21:02:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 105,
@@ -238,8 +217,8 @@
     },
     {
       "schema_version": "2.0",
-      "command_id": "390d91e4-cbf3-4592-88a5-72d8c70351a5",
-      "plan_id": "c684441a-1634-4674-b3c9-14d1acedaa3e",
+      "command_id": "aedb0603-1626-4338-bf93-1102765af700",
+      "plan_id": "3fe06083-4d92-4c4f-9f76-ed0406b8d0d8",
       "issued_at": "2026-11-13T21:02:10+09:00",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
       "based_on_revision": 105,
@@ -252,9 +231,25 @@
         "PREFERS_COOLER",
         "snapshot"
       ]
+    },
+    {
+      "schema_version": "2.0",
+      "command_id": "aa769d69-cdff-44fd-82ea-4d3b0261f401",
+      "plan_id": "3fe06083-4d92-4c4f-9f76-ed0406b8d0d8",
+      "issued_at": "2026-11-13T21:02:10+09:00",
+      "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
+      "based_on_revision": 105,
+      "device_id": "vacuum_01",
+      "action": "return_to_dock",
+      "params": {},
+      "reason_codes": [
+        "NEXT_ROOM_OCCUPIED:room1",
+        "snapshot"
+      ]
     }
   ],
   "rejected": [],
   "speech": [],
-  "summary": "LLM 없이 제한을 지키는 선택"
+  "summary": "LLM 없이 제한을 지키는 선택",
+  "undelivered": []
 }

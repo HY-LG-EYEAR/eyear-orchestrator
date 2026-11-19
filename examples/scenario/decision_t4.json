@@ -1,14 +1,14 @@
 {
-  "plan_id": "5e6ee2ec-378d-4fe9-9b81-ed038aa0be6e",
+  "plan_id": "77adad98-d26e-454f-aed1-2973bb1367bc",
   "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-  "world_revision": 113,
+  "world_revision": 114,
   "decided_at": "2026-11-13T21:40:00+09:00",
   "trigger": "snapshot",
   "proposals": [
     {
       "agent": "cleaning",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 113,
+      "world_revision": 114,
       "actions": [
         {
           "device_id": "vacuum_01",
@@ -23,8 +23,10 @@
         }
       ],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
+        "urgency:room2": 0.081,
         "urgency:room1": 0.406
       },
       "reasons": [],
@@ -33,7 +35,7 @@
     {
       "agent": "noise",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 113,
+      "world_revision": 114,
       "actions": [],
       "restrictions": [
         {
@@ -44,9 +46,9 @@
           "reason": "ROOM_OCCUPIED_RESTING"
         }
       ],
+      "keeps": [],
       "questions": [],
       "scores": {
-        "disturb:vacuum_01:room1": 0.953,
         "disturb:washer_01:room1": 0.84,
         "disturb:washer_01:living": 0.151
       },
@@ -56,9 +58,10 @@
     {
       "agent": "temperature",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 113,
+      "world_revision": 114,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {
         "target:ac_room1": 24.0,
@@ -70,9 +73,10 @@
     {
       "agent": "lighting",
       "world_session_id": "592066b1-2467-47d3-a48a-f27b2e567fe7",
-      "world_revision": 113,
+      "world_revision": 114,
       "actions": [],
       "restrictions": [],
+      "keeps": [],
       "questions": [],
       "scores": {},
       "reasons": [],
@@ -80,78 +84,27 @@
     }
   ],
   "accepted": [],
-  "conflicts": [
+  "conflicts": [],
+  "choices": [],
+  "arbitration": "none",
+  "commands": [],
+  "rejected": [
     {
-      "conflict_id": "vacuum_01:start_cleaning",
-      "device_id": "vacuum_01",
-      "description": "청소 제안 ['room1']가 소음 제한과 겹침 [room1:ROOM_OCCUPIED_RESTING(strong)]",
-      "options": [
-        {
-          "option_id": "original",
-          "summary": "제안대로 ['room1'] 청소(normal)",
-          "actions": [
-            {
-              "device_id": "vacuum_01",
-              "action": "start_cleaning",
-              "params": {
-                "room_ids": [
-                  "room1"
-                ],
-                "mode": "normal"
-              },
-              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
-            }
-          ],
-          "deferred_rooms": [],
-          "from_agents": [
-            "cleaning"
-          ]
-        },
-        {
-          "option_id": "quiet",
-          "summary": "['room1']를 저소음으로 청소",
-          "actions": [
-            {
-              "device_id": "vacuum_01",
-              "action": "start_cleaning",
-              "params": {
-                "room_ids": [
-                  "room1"
-                ],
-                "mode": "quiet"
-              },
-              "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
-            }
-          ],
-          "deferred_rooms": [],
-          "from_agents": [
-            "cleaning"
-          ]
-        },
-        {
-          "option_id": "hold",
-          "summary": "청소를 모두 미룸 ['room1']",
-          "actions": [],
-          "deferred_rooms": [
+      "action": {
+        "device_id": "vacuum_01",
+        "action": "start_cleaning",
+        "params": {
+          "room_ids": [
             "room1"
           ],
-          "from_agents": [
-            "noise"
-          ]
-        }
-      ]
+          "mode": "normal"
+        },
+        "reason": "ROUTINE_DUE:daily_clean_20261113_evening"
+      },
+      "reason": "WAIT_UNTIL_EMPTY:room1(ROOM_OCCUPIED_RESTING)"
     }
   ],
-  "choices": [
-    {
-      "conflict_id": "vacuum_01:start_cleaning",
-      "option_id": "hold",
-      "reason": "FALLBACK_RESPECT_RESTRICTIONS"
-    }
-  ],
-  "arbitration": "fallback",
-  "commands": [],
-  "rejected": [],
   "speech": [],
-  "summary": "LLM 없이 제한을 지키는 선택"
+  "summary": "",
+  "undelivered": []
 }

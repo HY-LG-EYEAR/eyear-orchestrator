@@ -3,10 +3,14 @@
 판단 1회의 순서
 1. 에이전트 4개가 같은 스냅샷으로 제안을 낸다.
 2. 이미 그 상태인 제안은 뺀다. 직접 명령으로 잠근 기기의 자동 제안도 뺀다.
-3. 충돌을 찾는다: 같은 기기·같은 동작에 다른 값, 또는 다른 에이전트의 제한(Restriction)에 걸리는 동작.
+3. 충돌을 찾는다.
+   - 청소 경로: 청소 에이전트의 "진행 중 계획 유지"와 소음 에이전트의 "도크로 복귀(다음 방 미룸)".
+     선택지는 두 에이전트의 제안 그대로이고, 중앙이 새 선택지를 만들지 않는다.
+   - 같은 기기·같은 동작에 서로 다른 값.
+   도크에 있는 청소기의 청소 시작이 소음 제한(비지 않은 방)에 걸리면 충돌로 보지 않고 규칙대로 기다린다.
 4. 충돌하지 않는 제안은 그대로 수용한다.
-5. 충돌마다 선택지를 기계적으로 만들고, LLM이 하나를 고른다. LLM이 없거나 실패하면 결정적 fallback.
-   같은 충돌·같은 상황(마감 구간, 점수 구간)이면 일정 시간 동안 앞의 선택을 재사용한다.
+5. 충돌마다 LLM이 주어진 선택지 중 하나를 고른다. LLM이 없거나 실패하면 결정적 fallback.
+   같은 충돌·같은 상황(마감 구간, 사람·선호)이면 일정 시간 동안 앞의 선택을 재사용한다.
 6. 수용한 동작을 검증(기기 능력·범위·상태 신선도·수동 조작·사용자 금지·중복)한 뒤 명령으로 보낸다.
 7. 빛 에이전트가 질문을 요청하면 Node로 말할 문장을 보낸다.
 
@@ -127,76 +131,64 @@ def already_done(a: ProposedAction, snap: WorldSnapshot) -> bool:
         "set_target_temperature": lambda: getattr(s, "target_c", None) == p.get("target_c"),
         "set_airflow_target": lambda: getattr(s, "airflow_target_person_id", None) == p.get("person_id"),
         "set_curtain_position": lambda: getattr(s, "position_pct", None) == p.get("position_pct"),
+        "return_to_dock": lambda: getattr(s, "status", None) in ("returning", "docked"),
     }.get(a.action, lambda: False)()
 
 
 # ---------- 충돌과 선택지 ----------
 
 def find_conflicts(proposals: list[AgentProposal], snap: WorldSnapshot):
-    """(충돌 없는 동작들, 충돌 목록)
+    """(충돌 없는 동작들, 충돌 목록, 소음 제한 때문에 기다리는 동작들[(동작, 이유)])
 
-    현재 범위: 같은 (기기, 동작)에 서로 다른 값, 그리고 청소 시작과 소음 제한의 겹침.
-    동작 이름이 다른 조합(예: start_cleaning과 return_to_dock)은 아직 충돌로 보지 않는다.
+    범위(발표 시나리오 기준):
+    - 청소기 경로: 청소의 "계획 유지"(KeepPlan)와 소음의 "도크 복귀"(return_to_dock) → 두 제안이 선택지
+    - 같은 (기기, 동작)에 서로 다른 값
+    - 도크에서의 청소 시작이 비지 않은 방에 걸림 → 충돌이 아니라 대기 (LLM을 부르지 않음)
     """
     by_key: dict[tuple, list[tuple[str, ProposedAction]]] = defaultdict(list)
     for prop in proposals:
         for a in prop.actions:
             by_key[(a.device_id, a.action)].append((prop.agent, a))
-    restrictions: list[tuple[str, Restriction]] = [(p.agent, r) for p in proposals for r in p.restrictions]
+    restrictions: list[Restriction] = [r for p in proposals for r in p.restrictions]
+    keeps = {k.device_id: (p.agent, k) for p in proposals for k in p.keeps}
 
-    accepted, conflicts = [], []
+    accepted, conflicts, waiting = [], [], []
     for (device_id, action), items in by_key.items():
         distinct: dict[tuple, tuple[list[str], ProposedAction]] = {}
         for agent, a in items:
             agents, _ = distinct.setdefault(a.key(), ([], a))
             agents.append(agent)
-        hits = [(ag, r) for ag, r in restrictions if r.device_id == device_id and r.action == action]
+        hits = [r for r in restrictions if r.device_id == device_id and r.action == action]
 
-        if action == "start_cleaning" and hits:
-            for agents, a in distinct.values():
-                blocked = [(ag, r) for ag, r in hits if r.room_id in a.params.get("room_ids", [])]
+        if action == "return_to_dock" and device_id in keeps:
+            agents, a = next(iter(distinct.values()))
+            conflicts.append(_route_conflict(keeps[device_id], agents, a))
+        elif action == "start_cleaning" and hits:
+            for _, a in distinct.values():
+                blocked = [r for r in hits if r.room_id in a.params.get("room_ids", [])]
                 if blocked:
-                    conflicts.append(_cleaning_conflict(agents, a, blocked, snap))
+                    waiting.append((a, "WAIT_UNTIL_EMPTY:" + ",".join(f"{r.room_id}({r.reason})" for r in blocked)))
                 else:
                     accepted.append(a)
         elif len(distinct) > 1:
             conflicts.append(_value_conflict(device_id, action, list(distinct.values())))
         else:
             accepted.append(next(iter(distinct.values()))[1])
-    return accepted, conflicts
+    return accepted, conflicts, waiting
 
 
-def _cleaning_conflict(agents, a: ProposedAction, blocked, snap) -> Conflict:
-    rooms = list(a.params["room_ids"])
-    mode = a.params.get("mode", "normal")
-    strong = [r.room_id for _, r in blocked if r.strength == "strong"]
-    weak = [r.room_id for _, r in blocked if r.strength == "weak"]
-    restricting = sorted({ag for ag, _ in blocked})
-    cid = f"{a.device_id}:start_cleaning"
-
-    def act(rs, m):
-        return ProposedAction(device_id=a.device_id, action="start_cleaning",
-                              params={"room_ids": rs, "mode": m}, reason=a.reason)
-
-    opts = [Option(option_id="original", summary=f"제안대로 {rooms} 청소({mode})", actions=[act(rooms, mode)],
-                   from_agents=agents)]
-    free = [r for r in rooms if r not in strong and r not in weak]
-    if free:
-        opts.append(Option(option_id="skip_restricted", summary=f"{free}만 청소, {strong + weak}은 미룸",
-                           actions=[act(free, mode)], deferred_rooms=strong + weak, from_agents=agents + restricting))
-    free_strong = [r for r in rooms if r not in strong]
-    if weak and free_strong and free_strong != free:
-        opts.append(Option(option_id="skip_occupied", summary=f"{free_strong}만 청소, {strong}은 미룸",
-                           actions=[act(free_strong, mode)], deferred_rooms=strong, from_agents=agents + restricting))
-    dev = snap.device(a.device_id)
-    if dev and "quiet" in dev.capabilities.modes and mode != "quiet":
-        opts.append(Option(option_id="quiet", summary=f"{rooms}를 저소음으로 청소", actions=[act(rooms, "quiet")],
-                           from_agents=agents))
-    opts.append(Option(option_id="hold", summary=f"청소를 모두 미룸 {rooms}", actions=[], deferred_rooms=rooms,
-                       from_agents=restricting))
-    why = ", ".join(f"{r.room_id}:{r.reason}({r.strength})" for _, r in blocked)
-    return Conflict(conflict_id=cid, device_id=a.device_id,
-                    description=f"청소 제안 {rooms}가 소음 제한과 겹침 [{why}]", options=opts)
+def _route_conflict(keep, ret_agents, ret: ProposedAction) -> Conflict:
+    keep_agent, k = keep
+    why, nxt = ret.reason.rsplit(":", 1)
+    opts = [
+        Option(option_id="keep_plan", summary=f"계획 유지: 남은 방 {k.room_ids} 순서대로 계속 청소 ({nxt}에 들어감)",
+               actions=[], from_agents=[keep_agent]),
+        Option(option_id="return_to_dock", summary=f"도크로 복귀해 대기: {nxt}이 확실히 빌 때까지 같은 회차의 남은 방 보류",
+               actions=[ret], deferred_rooms=list(k.room_ids), from_agents=ret_agents),
+    ]
+    return Conflict(conflict_id=f"{ret.device_id}:route", device_id=ret.device_id,
+                    description=f"청소기 다음 목적지 {nxt}: {why.removeprefix('NEXT_')}. 계획 유지 vs 도크 복귀",
+                    options=opts)
 
 
 def _value_conflict(device_id, action, items) -> Conflict:
@@ -208,11 +200,9 @@ def _value_conflict(device_id, action, items) -> Conflict:
 
 
 def fallback_choice(c: Conflict) -> Choice:
-    """LLM 없이: 제한을 모두 지키는 선택지 중 가장 많이 수행하는 것, 없으면 보류."""
-    ids = [o.option_id for o in c.options]
-    for pick in ("skip_restricted", "hold"):
-        if pick in ids:
-            return Choice(conflict_id=c.conflict_id, option_id=pick, reason="FALLBACK_RESPECT_RESTRICTIONS")
+    """LLM 없이: 청소 경로는 사람 있는 방을 피하는 도크 복귀, 값 충돌은 바꾸지 않음."""
+    if any(o.option_id == "return_to_dock" for o in c.options):
+        return Choice(conflict_id=c.conflict_id, option_id="return_to_dock", reason="FALLBACK_AVOID_OCCUPIED_ROOM")
     return Choice(conflict_id=c.conflict_id, option_id="hold", reason="FALLBACK_HOLD")
 
 
@@ -337,6 +327,7 @@ class Orchestrator:
             self.protected: dict[str, set[str]] = {}
             self.pending: dict[str, Pending] = {}
             self.holds: dict[str, datetime] = {}
+            self.recalled: set[str] = set()   # 도크 복귀를 보냈는데 아직 청소 중으로 보이는 청소기
             self.memo: dict[str, Memo] = {}
             self.last_key: str | None = None
             self.paused = False
@@ -366,6 +357,9 @@ class Orchestrator:
                 self.generation += 1   # 세션이 바뀌면 진행 중인 판단은 버린다
             self.hist.observe(snap)
             self.dialogue.update(snap)
+            self._observe_vacuum_progress(cur, snap)
+            self.recalled = {d for d in self.recalled
+                             if getattr(getattr(snap.device(d), "state", None), "status", None) == "cleaning"}
             self.snap, self.snap_received = snap, self.clock()
             self._observe_pending(snap)
             # 재시도 간격이 막 지난 작업도 판단 계기로 본다 (상태가 그대로여도 재시도가 일어나게)
@@ -563,6 +557,10 @@ class Orchestrator:
             for a in p.actions:
                 if already_done(a, snap):
                     continue
+                if a.action == "return_to_dock" and (a.device_id in self.recalled or any(
+                        x.cmd.device_id == a.device_id and x.cmd.action == "return_to_dock" for x in self.pending.values())):
+                    rejected.append(Rejected(action=a, reason="ALREADY_RETURNING"))   # 다시 묻지 않음
+                    continue
                 until = self.holds.get(a.device_id)
                 if until and snap.as_of < until:
                     rejected.append(Rejected(action=a, reason="DIRECT_COMMAND_HOLD"))
@@ -573,7 +571,8 @@ class Orchestrator:
                     continue
                 kept.append(a)
             p.actions[:] = kept
-        accepted, conflicts = find_conflicts(proposals, snap)
+        accepted, conflicts, waiting = find_conflicts(proposals, snap)
+        rejected += [Rejected(action=a, reason=why) for a, why in waiting]
         keys = {c.conflict_id: memo_key(c, snap, proposals) for c in conflicts}
         return Plan(snap, proposals, accepted, conflicts, keys, rejected, sleep_people,
                     generation=self.generation, change_no=self.change_no)
@@ -627,6 +626,9 @@ class Orchestrator:
         plan_id = str(uuid.uuid4())
         commands, failed = self._dispatch(valid, snap, plan_id, [trigger])
         rejected += failed
+        for c in commands:
+            if c.action == "return_to_dock":
+                self._keep_backlog(c.device_id, snap)
         # 발행이 거절된 자동 동작은 짧은 간격으로 몇 번만 다시 시도한다 (같은 판단 키여도 재시도 시각이 지나면 다시 판단)
         for r in failed:
             key = action_key(r.action.device_id, r.action.action, r.action.params, occurrence_of(r.action))
@@ -666,6 +668,42 @@ class Orchestrator:
                         self.last_key = None                       # 다음 스냅샷에서 다시 판단해 질문
         return self._record(plan_id, snap, trigger, proposals, accepted, plan.conflicts, choices, arbitration,
                             commands, rejected, speech, " / ".join(dict.fromkeys(summaries)), undelivered)
+
+    def _observe_vacuum_progress(self, prev: WorldSnapshot | None, snap: WorldSnapshot) -> None:
+        """중앙이 시키지 않은 청소 진행도 회차 기록에 남긴다 (예: t0에 이미 하던 방2 청소).
+        - 청소 중 남은 방 목록에서 빠진 방 → 그 방은 끝남
+        - 청소 중이다가 스스로 멈춤(복귀를 보내지 않았고, 이 중앙이 시작한 청소도 아님) → 남은 방 모두 끝남
+        이 중앙이 시작한 청소는 완료 결과로만 기록한다."""
+        if prev is None or prev.world_session_id != snap.world_session_id:
+            return
+        for d in snap.devices:
+            old = prev.device(d.device_id)
+            if d.kind != "vacuum" or old is None or old.state.status != "cleaning":
+                continue
+            occ = next((rt.occurrence_id for rt in snap.routines if rt.due and rt.device_id == d.device_id), None)
+            ours = any(p.cmd.device_id == d.device_id and p.cmd.action == "start_cleaning" for p in self.pending.values())
+            if occ is None or ours:
+                continue
+            before = list(old.state.target_room_ids)
+            if d.state.status == "cleaning":
+                finished = [r for r in before if r not in d.state.target_room_ids]
+            elif d.device_id in self.recalled:
+                finished = []
+            else:
+                finished = before
+            for r in finished:
+                self.hist.mark_cleaned(r, snap.as_of, occ)
+
+    def _keep_backlog(self, device_id: str, snap: WorldSnapshot) -> None:
+        """청소기를 도크로 돌려보낼 때 남아 있던 방을 그 회차의 남은 작업으로 보관한다.
+        이미 끝낸 방(예: 방2)은 청소기의 남은 목록에 없으므로 다시 들어가지 않는다. 완료 결과가 올 때까지 둔다."""
+        self.recalled.add(device_id)
+        d = snap.device(device_id)
+        targets = list(getattr(d.state, "target_room_ids", None) or []) if d else []
+        for rt in snap.routines:
+            if rt.due and rt.device_id == device_id and targets:
+                done = self.hist.done_rooms.get(rt.occurrence_id, set())
+                self.hist.backlog[rt.occurrence_id] = [r for r in targets if r not in done]
 
     @staticmethod
     def _valid_selection(sel, conflicts) -> bool:
