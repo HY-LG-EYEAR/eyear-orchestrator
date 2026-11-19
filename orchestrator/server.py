@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import queue
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -49,41 +50,81 @@ class ControlIn(BaseModel):
     action: str
 
 
+def parse_voice_message(topic: str, payload: bytes):
+    """MQTT 음성 메시지를 검증해 (종류, 모델)로. 토픽의 방과 메시지 안 room_id가 다르면 버린다."""
+    parts = topic.split("/")
+    if len(parts) < 4 or parts[0] != "eyear" or parts[1] != "v0":
+        raise ValueError("모르는 토픽")
+    room = parts[2]
+    if topic.endswith("/voice/reply"):
+        msg, kind = VoiceReply.model_validate_json(payload), "reply"
+    elif topic.endswith("/voice/command"):
+        msg, kind = VoiceCommand.model_validate_json(payload), "command"
+    else:
+        raise ValueError("음성 토픽이 아님")
+    if msg.room_id != room:
+        raise ValueError(f"토픽의 방({room})과 메시지의 방({msg.room_id})이 다름")
+    return kind, msg
+
+
 class MqttBridge:
-    """Node 음성 토픽(eyear/v0/{room}/speak, voice/reply, voice/command)과 기기 명령 토픽."""
+    """Node 음성 토픽(eyear/v0/{room}/speak, voice/reply, voice/command)과 기기 명령 토픽.
+
+    MQTT 수신 콜백은 검증 후 큐에 넣기만 한다. 중앙 처리(LLM 대기 포함)는 별도 스레드에서 해서
+    수신 루프가 막히지 않게 한다."""
 
     def __init__(self, host: str, port: int):
         import paho.mqtt.client as mqtt
 
+        self.mqtt = mqtt
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="eyear-orchestrator")
         self.host, self.port, self.orc = host, port, None
         self.client.on_connect = lambda c, u, f, rc, p=None: (
-            c.subscribe("eyear/v0/+/voice/reply"), c.subscribe("eyear/v0/+/voice/command"))
+            c.subscribe("eyear/v0/+/voice/reply", qos=1), c.subscribe("eyear/v0/+/voice/command", qos=1))
         self.client.on_message = self._on_message
+        self.inbox: queue.Queue = queue.Queue(maxsize=200)
+        self._stop = threading.Event()
 
     def start(self, orc: Orchestrator) -> None:
         self.orc = orc
+        threading.Thread(target=self._work, name="mqtt-voice", daemon=True).start()
         self.client.connect(self.host, self.port)
         self.client.loop_start()
 
     def stop(self) -> None:
+        self._stop.set()
         self.client.loop_stop()
         self.client.disconnect()
 
     def _on_message(self, client, userdata, msg) -> None:
         try:
-            if msg.topic.endswith("/voice/reply"):
-                self.orc.on_voice_reply(VoiceReply.model_validate_json(msg.payload))
-            elif msg.topic.endswith("/voice/command"):
-                self.orc.on_voice_command(VoiceCommand.model_validate_json(msg.payload))
+            self.inbox.put_nowait(parse_voice_message(msg.topic, msg.payload))
+        except queue.Full:
+            log.error("음성 처리 큐가 가득 참, 메시지 버림: %s", msg.topic)
         except Exception as e:
             log.warning("MQTT 메시지 무시 (%s): %s", msg.topic, e)
 
+    def _work(self) -> None:
+        while not self._stop.is_set():
+            try:
+                kind, msg = self.inbox.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                (self.orc.on_voice_reply if kind == "reply" else self.orc.on_voice_command)(msg)
+            except Exception as e:
+                log.error("음성 메시지 처리 실패: %s", e)
+
+    def _publish(self, topic: str, payload: str) -> None:
+        info = self.client.publish(topic, payload, qos=1)
+        if info.rc != self.mqtt.MQTT_ERR_SUCCESS:
+            log.error("MQTT 발행 실패 %s (rc=%s)", topic, info.rc)
+
     def speak(self, room_id: str, cmd: SpeakCommand) -> None:
-        self.client.publish(f"eyear/v0/{room_id}/speak", cmd.model_dump_json(), qos=1)
+        self._publish(f"eyear/v0/{room_id}/speak", cmd.model_dump_json())
 
     def send_command(self, cmd: DeviceCommand) -> None:
-        self.client.publish(f"eyear/v0/device/{cmd.device_id}/command", cmd.model_dump_json(), qos=1)
+        self._publish(f"eyear/v0/device/{cmd.device_id}/command", cmd.model_dump_json())
 
 
 def create_app(settings: Settings | None = None, orchestrator: Orchestrator | None = None,

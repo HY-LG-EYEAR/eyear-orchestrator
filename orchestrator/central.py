@@ -34,7 +34,9 @@ from orchestrator.schemas import (
     AgentProposal, Choice, Conflict, Decision, DeviceCommand, DeviceResult, Option, ProposedAction,
     Rejected, Restriction, SpeakCommand, VoiceCommand, VoiceReply,
 )
-from orchestrator.voice import DialogueManager, LISTEN_SECONDS, parse_command, question_text
+from orchestrator.voice import (
+    LISTEN_SECONDS, MIN_COMMAND_CONF, DialogueManager, command_problem, parse_command, question_text,
+)
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ MANUAL_HOLD = timedelta(minutes=30)   # 직접 명령 뒤 같은 기기를 자�
 MEMO_TTL = timedelta(minutes=15)      # 같은 충돌의 선택을 재사용하는 최대 시간 (스냅샷 시각 기준)
 ACCEPT_TIMEOUT_S = 30.0               # 명령을 보낸 뒤 접수(accepted) 또는 결과를 기다리는 시간
 SNAPSHOT_MAX_AGE_S = 120.0            # 마지막 스냅샷을 받은 뒤 이 시간이 지나면 상태를 오래된 것으로 봄
+VOICE_MAX_AGE_S = 30.0                # live에서 이보다 오래된 음성 메시지(대답·직접 명령)는 버림
 TERMINAL = {"completed", "failed", "rejected"}
 IDEMPOTENT_ACTIONS = {"set_mode", "set_power", "set_target_temperature", "set_airflow_target", "set_curtain_position"}
 TRANSIENT_FAILURES = {"busy", "timeout", "temporarily_unavailable"}   # 다시 시도해도 되는 실패 이유
@@ -335,6 +338,7 @@ class Orchestrator:
             self.memo: dict[str, Memo] = {}
             self.last_key: str | None = None
             self.paused = False
+            self.voice_seen: deque[tuple[str, str]] = deque(maxlen=500)
 
     def status(self) -> dict:
         with self.lock:
@@ -362,15 +366,34 @@ class Orchestrator:
             self.dialogue.update(snap)
             self.snap, self.snap_received = snap, self.clock()
             self._observe_pending(snap)
-            key = decision_key(snap) + json.dumps({k: (v.state, v.answer) for k, v in self.dialogue.episodes.items()})
+            # 재시도 간격이 막 지난 작업도 판단 계기로 본다 (상태가 그대로여도 재시도가 일어나게)
+            retry_ready = sorted(str(k) for k, (_, t) in self.failures.items() if t is not None and snap.as_of >= t)
+            key = decision_key(snap) + json.dumps({k: (v.state, v.answer) for k, v in self.dialogue.episodes.items()}) \
+                + json.dumps(retry_ready)
             if key == self.last_key:
                 return None
             self.last_key = key
         return self.decide("snapshot")
 
+    def _voice_seen(self, msg) -> bool:
+        """같은 (node_id, event_id) 음성 메시지는 한 번만 처리한다(MQTT 중복 전달)."""
+        if not msg.event_id:
+            return False
+        key = (msg.node_id, msg.event_id)
+        if key in self.voice_seen:
+            return True
+        self.voice_seen.append(key)
+        return False
+
+    def _voice_too_old(self, msg) -> bool:
+        """live에서 메시지 시각이 VOICE_MAX_AGE_S보다 오래됐으면 버린다(replay는 녹화 시각이라 비교하지 않음)."""
+        if self.clock_mode != "live" or msg.timestamp is None:
+            return False
+        return (datetime.now(msg.timestamp.tzinfo) - msg.timestamp).total_seconds() > VOICE_MAX_AGE_S
+
     def on_voice_reply(self, reply: VoiceReply) -> Decision | None:
         with self.lock:
-            if self.snap is None:
+            if self.snap is None or self._voice_seen(reply) or self._voice_too_old(reply):
                 return None
             ep = self.dialogue.on_reply(reply, self.clock())
             if ep is None:
@@ -389,10 +412,18 @@ class Orchestrator:
             if node is None or node.node_id != cmd.node_id:
                 log.warning("등록되지 않은 Node의 명령 무시: %s@%s", cmd.node_id, cmd.room_id)
                 return None
+            if self._voice_seen(cmd) or self._voice_too_old(cmd):
+                return None
             self.change_no += 1
+            problem = command_problem(cmd.text)
             parsed = parse_command(cmd.text)
             accepted, rejected, speech = [], [], []
-            if not self._snapshot_fresh():
+            if cmd.confidence < MIN_COMMAND_CONF:
+                speech.append(self._say(cmd.room_id, "잘 못 들었어요. 다시 말씀해 주세요.", False))
+            elif problem is not None:
+                speech.append(self._say(cmd.room_id, "확실하지 않아 실행하지 않았어요. 원하시는 동작을 다시 말씀해 주세요.",
+                                        False))
+            elif not self._snapshot_fresh():
                 speech.append(self._say(cmd.room_id, "지금은 집 상태를 확인할 수 없어 실행하지 않았어요.", False))
                 if parsed is not None:
                     dev = next((d for d in snap.devices if d.kind == parsed[0] and d.room_id == cmd.room_id), None)
@@ -419,8 +450,13 @@ class Orchestrator:
                         speech.append(self._say(cmd.room_id, ack, False))
             plan_id = str(uuid.uuid4())
             commands = self._dispatch(accepted, snap, plan_id, ["DIRECT_COMMAND"])
+            summary = "직접 명령은 자동 계획보다 우선"
+            if cmd.confidence < MIN_COMMAND_CONF:
+                summary = f"인식 신뢰도 낮음({cmd.confidence:.2f}) → 실행 안 함"
+            elif problem is not None:
+                summary = f"{problem} → 실행 안 함"
             return self._record(plan_id, snap, f"voice_command:{cmd.text}", [], accepted, [], [], "none",
-                                commands, rejected, speech, "직접 명령은 자동 계획보다 우선")
+                                commands, rejected, speech, summary)
 
     def on_device_result(self, res: DeviceResult) -> None:
         with self.lock:

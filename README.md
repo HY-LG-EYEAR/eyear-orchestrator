@@ -27,10 +27,16 @@ Notes
 - The LLM is called outside the Orchestrator's lock. If a newer snapshot, a direct command, a pause/resume, or a voice reply arrives while waiting, the decision is recomputed on the newest state. If the Orchestrator was reset or the session changed, the pending decision is discarded.
 - Snapshots older than the current `world_revision` of the same session are ignored. Freshness is judged by when a snapshot was received (live and replay alike), so recorded scenarios with past dates still work; the server checks the age of live `as_of` on receipt.
 - A command stays pending until a final result (`completed`, `failed`, or `rejected`) arrives for the same session and device. `accepted` and in-progress work never expire by time. If not even `accepted` arrives within 30 seconds, value-setting commands (`set_*`) may be sent again after the next state check, while other commands (such as `start_cleaning`) are marked unknown and are not resent automatically. A cleaning completion is recorded on the routine occurrence the command was issued for.
-- Failures with a known transient reason (`busy`, `timeout`, `temporarily_unavailable`) are retried after 5 minutes, at most twice. Rejections and other failures are not repeated automatically.
+- Failures with a known transient reason (`busy`, `timeout`, `temporarily_unavailable`) are retried after 5 minutes, at most twice, even if nothing else in the home changes. Rejections and other failures are not repeated automatically.
 - A direct command is refused if the last snapshot is older than 120 seconds.
 - Conflict detection currently covers different values for the same device and action, and cleaning rooms blocked by a noise restriction. Other combinations (for example `start_cleaning` vs. `return_to_dock`) are not yet detected.
-- Sleep questions are accepted only from the Node and room the question was sent to.
+
+Voice
+- Replies to the sleep question count as yes or no only when they are short and clear ("응", "네", "아니", "응 잘게"). Questions, mixed answers, and "어" are treated as ambiguous, which leaves lights and curtains unchanged. Replies are accepted only from the Node and room the question was sent to, and only while the person is still in that room.
+- A direct command is not carried out when it is negated ("불 켜지 마") or phrased as a question ("불 켜야 하나?", "불 켰어?"); the Node asks the resident to say it again. Direct commands need a recognition confidence of at least 0.4 (replies 0.2).
+- Voice messages with the same `(node_id, event_id)` are handled once, live messages older than 30 seconds are ignored, and an MQTT message whose topic room differs from its `room_id` is dropped.
+- The reply deadline is speaking time + `listen_seconds` + 2 s + 8 s allowance for a Node that queues the question behind another conversation.
+- MQTT callbacks only validate and queue messages; a separate worker thread handles them, so waiting for the LLM does not block MQTT. Subscriptions and publishes use QoS 1, and failed publishes are logged.
 
 ## Values read from the World Model (per agent)
 

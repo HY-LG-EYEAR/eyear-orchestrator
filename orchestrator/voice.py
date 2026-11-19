@@ -14,11 +14,16 @@ from orchestrator.schemas import VoiceReply
 
 LISTEN_SECONDS = 5.0
 REPLY_MARGIN_S = 2.0
-MIN_REPLY_CONF = 0.2  # 짧은 대답은 신뢰도 0.3~0.6이 정상 (Node 실측)
+QUEUE_ALLOWANCE_S = 8.0   # Node가 다른 대화 중이면 질문을 줄 세웠다가 읽으므로 그만큼 더 기다린다
+MIN_REPLY_CONF = 0.2      # 짧은 대답은 신뢰도 0.3~0.6이 정상 (Node 실측)
+MIN_COMMAND_CONF = 0.4    # 직접 명령은 기기를 움직이므로 대답보다 높은 신뢰도를 요구한다
 
-YES_EXACT = {"응", "네", "예", "어", "웅", "엉", "ㅇㅇ", "넵", "넹", "yes"}
-YES_PARTS = ("그래", "맞아", "잘게", "잘거", "자려", "잘래", "좋아", "네네", "응응")
-NO_PARTS = ("아니", "아뇨", "안잘", "안자", "싫어", "됐어", "노노")
+# 대답은 "짧고 명확한 말"만 긍정·부정으로 본다. 질문, 긴 문장, 섞인 말은 모호(ambiguous)
+QUESTION_WORDS = ("뭐", "뭔", "왜", "어떻게", "언제", "누구", "무슨")
+YES_WORDS = {"응", "네", "예", "웅", "엉", "ㅇㅇ", "넵", "넹", "yes", "그래", "그래요", "맞아", "맞아요", "좋아", "좋아요"}
+YES_SLEEP = {"잘게", "잘게요", "잘래", "잘래요", "자려고", "자려고요", "잘거야", "잘거예요", "잘거에요", "잘꺼야", "자야지"}
+NO_WORDS = {"아니", "아니요", "아니오", "아뇨", "아냐", "싫어", "싫어요", "노"}
+NO_SLEEP = ("안잘", "안자", "안잔")
 
 
 def normalize(text: str) -> str:
@@ -26,15 +31,18 @@ def normalize(text: str) -> str:
 
 
 def interpret_reply(text: str | None, confidence: float | None) -> str:
-    """'yes' | 'no' | 'ambiguous'. 문장부호는 무시한다."""
+    """'yes' | 'no' | 'ambiguous'. 문장부호는 무시한다(Node 인식기가 '응?'처럼 붙임).
+    "어"는 '응'과 '뭐?' 둘 다 될 수 있어 모호로 본다."""
     if not text or confidence is None or confidence < MIN_REPLY_CONF:
         return "ambiguous"
     t = normalize(text)
-    if any(w in t for w in NO_PARTS):
-        return "no"
-    if t in YES_EXACT or any(w in t for w in YES_PARTS):
-        return "yes"
-    return "ambiguous"
+    if not t or any(q in t for q in QUESTION_WORDS):
+        return "ambiguous"
+    no = t in NO_WORDS or t.startswith(("아니", "아뇨", "아냐")) or any(x in t for x in NO_SLEEP)
+    yes = t in YES_WORDS or t in YES_SLEEP or any(t == a + b for a in YES_WORDS for b in YES_SLEEP | {"응", "네"})
+    if yes == no:
+        return "ambiguous"
+    return "yes" if yes else "no"
 
 
 def display_name(identity: str) -> str:
@@ -85,7 +93,10 @@ class DialogueManager:
                     self.episodes[p.person_id] = Episode(p.person_id, p.room_id, p.identity)
                     self.log.append(f"episode start {p.person_id}@{p.room_id}")
                 continue
-            left = p.room_id != ep.room_id and occ.get(ep.room_id) != "OCCUPIED"
+            # 다른 방에서 지금 관측되면 원래 방에 다른 사람이 남아 있어도 이동으로 본다.
+            # 위치만 모르게 된 경우(room_id=None)는 원래 방이 비었을 때만 끝낸다.
+            moved = p.room_id is not None and p.room_id != ep.room_id and p.evidence.freshness == "current"
+            left = moved or (p.room_id != ep.room_id and occ.get(ep.room_id) != "OCCUPIED")
             rose = confirmed and label not in ("resting", "unknown")
             if left or rose:
                 self._end(ep, "left" if left else "rose")
@@ -100,7 +111,7 @@ class DialogueManager:
     def asked(self, person_id: str, command_id: str, now: float, text: str, node_id: str | None = None) -> None:
         ep = self.episodes[person_id]
         ep.state, ep.command_id, ep.node_id = "AWAITING_REPLY", command_id, node_id
-        ep.deadline = now + speech_seconds(text) + LISTEN_SECONDS + REPLY_MARGIN_S
+        ep.deadline = now + speech_seconds(text) + LISTEN_SECONDS + REPLY_MARGIN_S + QUEUE_ALLOWANCE_S
 
     def awaiting_in_room(self, room_id: str) -> bool:
         return any(e.state == "AWAITING_REPLY" and e.room_id == room_id for e in self.episodes.values())
@@ -134,8 +145,26 @@ class DialogueManager:
 
 # ---------- 직접 명령 ("하이 엘지" 뒤 문장) ----------
 
+NEGATION = ("지마", "지말", "말아", "말고", "하지마", "안켜", "안꺼", "안끄")
+QUESTION_ENDINGS = ("나", "니", "냐", "까", "나요", "까요", "니까", "었어", "았어", "켰어", "껐어", "했어", "됐어",
+                    "인가", "인가요")
+
+
+def command_problem(text: str) -> str | None:
+    """실행하면 안 되는 문장이면 이유. 부정("켜지 마")과 질문("켜야 하나?", "켰어?")은 실행하지 않는다.
+    "불 켜줘?"처럼 인식기가 물음표만 붙인 명령은 실행한다(어미가 명령형)."""
+    t = normalize(text)
+    if any(n in t for n in NEGATION):
+        return "NEGATED"
+    if t.endswith(QUESTION_ENDINGS):
+        return "QUESTION"
+    return None
+
+
 def parse_command(text: str) -> tuple[str, str, dict, str] | None:
-    """(기기 종류, 동작, 파라미터, 응답 문장) 또는 None."""
+    """(기기 종류, 동작, 파라미터, 응답 문장) 또는 None. 부정·질문 문장은 None."""
+    if command_problem(text):
+        return None
     t = normalize(text)
     on = any(w in t for w in ("켜", "킬", "틀어"))
     off = any(w in t for w in ("꺼", "끄", "끌"))

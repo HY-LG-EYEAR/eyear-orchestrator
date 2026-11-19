@@ -479,3 +479,111 @@ def test_direct_command_is_refused_when_state_is_old():
     clock.t += 121
     d = orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="불 켜줘", confidence=0.9))
     assert d.commands == [] and d.rejected[0].reason == "SNAPSHOT_STALE"
+
+
+# ---------- 3차 점검: 음성 해석, 음성 메시지 검사, 이동 후 질문 무효화, 재시도 계기, MQTT 큐 ----------
+
+from orchestrator.voice import command_problem
+
+
+@pytest.mark.parametrize("text,want", [
+    ("그래서 뭐라고?", "ambiguous"), ("좋아하는 노래 틀어줘", "ambiguous"), ("어?", "ambiguous"),
+    ("응 아니", "ambiguous"), ("네 아니요", "ambiguous"), ("응 잘게", "yes"), ("네네", "yes"),
+    ("그래도 안 잘래", "no"),
+])
+def test_reply_interpretation_is_strict(text, want):
+    assert interpret_reply(text, 0.6) == want
+
+
+@pytest.mark.parametrize("text", ["불 켜지 마", "불 끄지 마", "에어컨 끄지 말아줘", "불 켜야 하나?", "불 켰어?"])
+def test_negated_or_question_commands_are_not_parsed(text):
+    assert parse_command(text) is None and command_problem(text) in ("NEGATED", "QUESTION")
+
+
+def test_command_with_question_mark_but_imperative_still_works():
+    assert parse_command("불 켜줘?")[:3] == ("light", "set_power", {"power": "on"})
+
+
+def test_negated_command_speaks_back_without_action():
+    orc, sent, said, _ = make()
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    n = len(sent)
+    d = orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="불 켜지 마", confidence=0.9))
+    assert d.commands == [] and len(sent) == n and "실행하지 않았어요" in d.speech[0].text
+
+
+def test_low_confidence_and_duplicate_commands_are_not_executed():
+    orc, sent, _, _ = make()
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    low = orc.on_voice_command(VoiceCommand(event_id="e0", node_id="node_room1", room_id="room1", text="불 켜줘",
+                                            confidence=0.1))
+    assert low.commands == []
+    for _ in range(2):
+        orc.on_voice_command(VoiceCommand(event_id="e1", node_id="node_room1", room_id="room1", text="불 켜줘",
+                                          confidence=0.9))
+    assert len([c for c in sent if c.device_id == "light_room1"]) == 1
+
+
+def test_old_live_voice_message_is_ignored():
+    from datetime import datetime, timezone
+    orc, sent, _, _ = make()
+    orc.reset(SESSION, "live")
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    old = datetime.now(timezone.utc) - timedelta(seconds=60)
+    assert orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="불 켜줘", confidence=0.9,
+                                             timestamp=old)) is None
+
+
+def test_question_is_void_after_person_is_seen_in_another_room():
+    orc, sent, said, _ = make()
+    s2 = DemoHome().snapshot("t2")
+    orc.on_snapshot(s2)
+    q = said[-1][1]
+
+    def move(r):
+        r["world_revision"] += 1
+        a = next(p for p in r["people"] if p["person_id"] == "person_a")
+        a.update(room_id="living", track_refs=[])
+        c = json.loads(json.dumps(a))
+        c.update(person_id="person_c", profile_id=None, identity="UNKNOWN", identity_source="UNKNOWN", room_id="room1")
+        r["people"].append(c)
+    orc.on_snapshot(modified(s2, move))
+    assert orc.on_voice_reply(VoiceReply(node_id="node_room1", room_id="room1", command_id=q.command_id, text="응",
+                                         confidence=0.9, no_response=False)) is None
+
+
+def test_late_reply_within_queue_allowance_is_accepted():
+    orc, sent, said, clock = make()
+    orc.on_snapshot(DemoHome().snapshot("t2"))
+    q = said[-1][1]
+    clock.t += 15          # Node가 질문을 줄 세웠다가 늦게 읽은 경우
+    orc.tick()
+    d = orc.on_voice_reply(VoiceReply(node_id="node_room1", room_id="room1", command_id=q.command_id, text="응",
+                                      confidence=0.9, no_response=False))
+    assert d is not None and d.commands
+
+
+def test_retry_happens_when_interval_passes_even_if_state_is_unchanged():
+    orc, sent, clock, s6, cmd = start_cleaning_at_t6()
+    orc.on_device_result(DeviceResult(world_session_id=cmd.world_session_id, command_id=cmd.command_id,
+                                      device_id=cmd.device_id, status="failed", timestamp=cmd.issued_at, reason="busy"))
+    n = len(sent)
+    same = modified(s6, lambda r: (r.update(world_revision=r["world_revision"] + 1),
+                                   r.update(as_of=(s6.as_of + timedelta(minutes=6)).isoformat())))
+    orc.on_snapshot(same)
+    assert any(c.action == "start_cleaning" for c in sent[n:])
+
+
+def test_mqtt_bridge_queues_messages_and_checks_topic_room():
+    from orchestrator.server import MqttBridge, parse_voice_message
+
+    payload = VoiceReply(node_id="node_room1", room_id="room1", command_id="c", text="응", confidence=0.9,
+                         no_response=False).model_dump_json().encode()
+    with pytest.raises(ValueError):
+        parse_voice_message("eyear/v0/living/voice/reply", payload)
+    bridge = MqttBridge("localhost", 1883)       # 연결하지 않음
+
+    msg_obj = type("Msg", (), {"topic": "eyear/v0/room1/voice/reply", "payload": payload})
+    bridge._on_message(None, None, msg_obj)
+    kind, msg = bridge.inbox.get_nowait()
+    assert kind == "reply" and msg.room_id == "room1"
