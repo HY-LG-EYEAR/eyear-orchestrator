@@ -64,14 +64,18 @@ def parse_voice_message(topic: str, payload: bytes):
         raise ValueError("음성 토픽이 아님")
     if msg.room_id != room:
         raise ValueError(f"토픽의 방({room})과 메시지의 방({msg.room_id})이 다름")
+    # MQTT로 오는 Node 메시지는 중복 제거·나이 검사에 필요한 두 필드가 반드시 있어야 한다
+    # (HTTP /v1/voice/* 테스트 입력에서는 생략 가능)
+    if not msg.event_id or msg.timestamp is None:
+        raise ValueError("MQTT 음성 메시지에는 event_id와 timestamp가 필요")
     return kind, msg
 
 
 class MqttBridge:
     """Node 음성 토픽(eyear/v0/{room}/speak, voice/reply, voice/command)과 기기 명령 토픽.
 
-    MQTT 수신 콜백은 검증 후 큐에 넣기만 한다. 중앙 처리(LLM 대기 포함)는 별도 스레드에서 해서
-    수신 루프가 막히지 않게 한다."""
+    MQTT 수신 콜백은 검증 후 큐에 넣기만 한다. 대답과 직접 명령은 서로 다른 작업 스레드에서 처리한다.
+    대답 처리가 LLM을 기다려도 직접 명령은 따로 바로 처리되고, 직접 명령끼리는 도착 순서를 지킨다."""
 
     def __init__(self, host: str, port: int):
         import paho.mqtt.client as mqtt
@@ -82,14 +86,18 @@ class MqttBridge:
         self.client.on_connect = lambda c, u, f, rc, p=None: (
             c.subscribe("eyear/v0/+/voice/reply", qos=1), c.subscribe("eyear/v0/+/voice/command", qos=1))
         self.client.on_message = self._on_message
-        self.inbox: queue.Queue = queue.Queue(maxsize=200)
+        self.queues = {"reply": queue.Queue(maxsize=200), "command": queue.Queue(maxsize=200)}
         self._stop = threading.Event()
 
     def start(self, orc: Orchestrator) -> None:
         self.orc = orc
-        threading.Thread(target=self._work, name="mqtt-voice", daemon=True).start()
+        self.start_workers()
         self.client.connect(self.host, self.port)
         self.client.loop_start()
+
+    def start_workers(self) -> None:
+        for kind in self.queues:
+            threading.Thread(target=self._work, args=(kind,), name=f"mqtt-{kind}", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -98,33 +106,39 @@ class MqttBridge:
 
     def _on_message(self, client, userdata, msg) -> None:
         try:
-            self.inbox.put_nowait(parse_voice_message(msg.topic, msg.payload))
+            kind, parsed = parse_voice_message(msg.topic, msg.payload)
+            self.queues[kind].put_nowait(parsed)
         except queue.Full:
             log.error("음성 처리 큐가 가득 참, 메시지 버림: %s", msg.topic)
         except Exception as e:
             log.warning("MQTT 메시지 무시 (%s): %s", msg.topic, e)
 
-    def _work(self) -> None:
+    def _work(self, kind: str) -> None:
+        handle = self.orc.on_voice_reply if kind == "reply" else self.orc.on_voice_command
+        q = self.queues[kind]
         while not self._stop.is_set():
             try:
-                kind, msg = self.inbox.get(timeout=0.5)
+                msg = q.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
-                (self.orc.on_voice_reply if kind == "reply" else self.orc.on_voice_command)(msg)
+                handle(msg)
             except Exception as e:
-                log.error("음성 메시지 처리 실패: %s", e)
+                log.error("음성 메시지 처리 실패(%s): %s", kind, e)
 
-    def _publish(self, topic: str, payload: str) -> None:
+    def _publish(self, topic: str, payload: str) -> bool:
+        """True = MQTT 클라이언트가 발행을 접수함(전달·실행 여부와는 다름). False = 즉시 거절."""
         info = self.client.publish(topic, payload, qos=1)
         if info.rc != self.mqtt.MQTT_ERR_SUCCESS:
             log.error("MQTT 발행 실패 %s (rc=%s)", topic, info.rc)
+            return False
+        return True
 
-    def speak(self, room_id: str, cmd: SpeakCommand) -> None:
-        self._publish(f"eyear/v0/{room_id}/speak", cmd.model_dump_json())
+    def speak(self, room_id: str, cmd: SpeakCommand) -> bool:
+        return self._publish(f"eyear/v0/{room_id}/speak", cmd.model_dump_json())
 
-    def send_command(self, cmd: DeviceCommand) -> None:
-        self._publish(f"eyear/v0/device/{cmd.device_id}/command", cmd.model_dump_json())
+    def send_command(self, cmd: DeviceCommand) -> bool:
+        return self._publish(f"eyear/v0/device/{cmd.device_id}/command", cmd.model_dump_json())
 
 
 def create_app(settings: Settings | None = None, orchestrator: Orchestrator | None = None,
@@ -138,18 +152,18 @@ def create_app(settings: Settings | None = None, orchestrator: Orchestrator | No
             bridge = MqttBridge(settings.mqtt_host, settings.mqtt_port)
         holder: dict = {}
 
-        def send(cmd: DeviceCommand) -> None:
+        def send(cmd: DeviceCommand) -> bool:
             if bridge and settings.device_transport == "mqtt":
-                bridge.send_command(cmd)
-            else:  # mock: 기기가 바로 완료했다고 가정
-                holder["orc"].on_device_result(DeviceResult(
-                    world_session_id=cmd.world_session_id, command_id=cmd.command_id, device_id=cmd.device_id,
-                    status="completed", timestamp=datetime.now(timezone.utc), reason="mock adapter"))
+                return bridge.send_command(cmd)
+            # mock: 기기가 바로 완료했다고 가정
+            holder["orc"].on_device_result(DeviceResult(
+                world_session_id=cmd.world_session_id, command_id=cmd.command_id, device_id=cmd.device_id,
+                status="completed", timestamp=datetime.now(timezone.utc), reason="mock adapter"))
+            return True
 
-        def speak(room_id: str, cmd: SpeakCommand) -> None:
+        def speak(room_id: str, cmd: SpeakCommand) -> bool:
             spoken.append((room_id, cmd))
-            if bridge:
-                bridge.speak(room_id, cmd)
+            return bridge.speak(room_id, cmd) if bridge else True
 
         trace = Path(settings.trace_path) if settings.trace_path else None
         if trace is not None and not trace.is_absolute():

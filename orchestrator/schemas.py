@@ -192,3 +192,4 @@ class Decision(_M):
     rejected: list[Rejected]
     speech: list[SpeakCommand]
     summary: str = ""
+    undelivered: list[str] = Field(default_factory=list)   # 발행이 즉시 거절된 음성 (명령은 rejected에 PUBLISH_FAILED)

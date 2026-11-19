@@ -161,26 +161,36 @@ def command_problem(text: str) -> str | None:
     return None
 
 
+# 지원하는 단일 명령 문형: "기기 (조사) (좀) 동작 (명령 어미)" 한 개짜리 문장 전체
+_DEVICE = r"(?P<dev>불|조명|전등|커튼|에어컨)(?:은|는|을|를|이|가)?"
+_VERB = r"(?P<verb>켜|꺼|틀어|열어|닫아|쳐)"
+_ENDING = r"(?:줘|줘요|주세요|주라|봐|라|요)?"
+COMMAND_RE = re.compile(rf"^{_DEVICE}(?:좀)?{_VERB}{_ENDING}$")
+COMMANDS = {
+    ("light", "켜"): ("set_power", {"power": "on"}, "네, 불을 켤게요."),
+    ("light", "꺼"): ("set_power", {"power": "off"}, "네, 불을 끌게요."),
+    ("curtain", "열어"): ("set_curtain_position", {"position_pct": 100}, "네, 커튼을 열게요."),
+    ("curtain", "닫아"): ("set_curtain_position", {"position_pct": 0}, "네, 커튼을 닫을게요."),
+    ("curtain", "쳐"): ("set_curtain_position", {"position_pct": 0}, "네, 커튼을 닫을게요."),
+    ("ac", "켜"): ("set_power", {"power": "on"}, "네, 에어컨을 켤게요."),
+    ("ac", "틀어"): ("set_power", {"power": "on"}, "네, 에어컨을 켤게요."),
+    ("ac", "꺼"): ("set_power", {"power": "off"}, "네, 에어컨을 끌게요."),
+}
+DEVICE_KIND = {"불": "light", "조명": "light", "전등": "light", "커튼": "curtain", "에어컨": "ac"}
+
+
 def parse_command(text: str) -> tuple[str, str, dict, str] | None:
-    """(기기 종류, 동작, 파라미터, 응답 문장) 또는 None. 부정·질문 문장은 None."""
+    """(기기 종류, 동작, 파라미터, 응답 문장) 또는 None.
+    문장 전체가 지원하는 단일 명령 문형일 때만 해석한다. 방법을 묻는 말, 부정, 여러 동작을 담은 말은
+    일부만 실행하지 않고 None (중앙이 다시 말해 달라고 안내)."""
     if command_problem(text):
         return None
-    t = normalize(text)
-    on = any(w in t for w in ("켜", "킬", "틀어"))
-    off = any(w in t for w in ("꺼", "끄", "끌"))
-    if "불" in t or "조명" in t or "전등" in t:
-        if on:
-            return ("light", "set_power", {"power": "on"}, "네, 불을 켤게요.")
-        if off:
-            return ("light", "set_power", {"power": "off"}, "네, 불을 끌게요.")
-    if "커튼" in t:
-        if "열" in t:
-            return ("curtain", "set_curtain_position", {"position_pct": 100}, "네, 커튼을 열게요.")
-        if "닫" in t or "쳐" in t:
-            return ("curtain", "set_curtain_position", {"position_pct": 0}, "네, 커튼을 닫을게요.")
-    if "에어컨" in t:
-        if on:
-            return ("ac", "set_power", {"power": "on"}, "네, 에어컨을 켤게요.")
-        if off:
-            return ("ac", "set_power", {"power": "off"}, "네, 에어컨을 끌게요.")
-    return None
+    m = COMMAND_RE.match(normalize(text))
+    if m is None:
+        return None
+    kind = DEVICE_KIND[m.group("dev")]
+    found = COMMANDS.get((kind, m.group("verb")))
+    if found is None:
+        return None
+    action, params, ack = found
+    return (kind, action, dict(params), ack)

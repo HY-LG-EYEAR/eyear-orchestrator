@@ -574,16 +574,95 @@ def test_retry_happens_when_interval_passes_even_if_state_is_unchanged():
     assert any(c.action == "start_cleaning" for c in sent[n:])
 
 
-def test_mqtt_bridge_queues_messages_and_checks_topic_room():
+def mqtt_payload(model_cls, **kw):
+    from datetime import datetime, timezone
+    import uuid as _uuid
+    base = dict(node_id="node_room1", room_id="room1", event_id=str(_uuid.uuid4()),
+                timestamp=datetime.now(timezone.utc))
+    return model_cls(**{**base, **kw}).model_dump_json().encode()
+
+
+def test_mqtt_bridge_queues_messages_and_checks_topic_room_and_fields():
     from orchestrator.server import MqttBridge, parse_voice_message
 
-    payload = VoiceReply(node_id="node_room1", room_id="room1", command_id="c", text="응", confidence=0.9,
-                         no_response=False).model_dump_json().encode()
+    payload = mqtt_payload(VoiceReply, command_id="c", text="응", confidence=0.9, no_response=False)
     with pytest.raises(ValueError):
-        parse_voice_message("eyear/v0/living/voice/reply", payload)
+        parse_voice_message("eyear/v0/living/voice/reply", payload)          # 방 불일치
+    no_id = VoiceReply(node_id="node_room1", room_id="room1", command_id="c", text="응", confidence=0.9,
+                       no_response=False).model_dump_json().encode()
+    with pytest.raises(ValueError):
+        parse_voice_message("eyear/v0/room1/voice/reply", no_id)            # event_id·timestamp 없음
     bridge = MqttBridge("localhost", 1883)       # 연결하지 않음
+    bridge._on_message(None, None, type("Msg", (), {"topic": "eyear/v0/room1/voice/reply", "payload": payload}))
+    msg = bridge.queues["reply"].get_nowait()
+    assert msg.room_id == "room1"
 
-    msg_obj = type("Msg", (), {"topic": "eyear/v0/room1/voice/reply", "payload": payload})
-    bridge._on_message(None, None, msg_obj)
-    kind, msg = bridge.inbox.get_nowait()
-    assert kind == "reply" and msg.room_id == "room1"
+
+# ---------- 4차 점검: 문장 전체 단일 명령, LLM 대기 중 MQTT 직접 명령, 발행 실패 ----------
+
+@pytest.mark.parametrize("text", ["불 켜는 방법 알려줘", "커튼 열지 않아도 돼", "불 끄고 켜줘",
+                                  "불은 켜두고 에어컨 꺼줘", "불 켜면 안 돼"])
+def test_only_whole_single_commands_are_executed(text):
+    assert parse_command(text) is None
+    orc, sent, said, _ = make()
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    n = len(sent)
+    d = orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text=text, confidence=0.9))
+    assert len(sent) == n and d.commands == [] and "다시 말씀해 주세요" in d.speech[0].text
+
+
+@pytest.mark.parametrize("text,want", [("불 꺼 줘", {"power": "off"}), ("에어컨 켜 주세요", {"power": "on"}),
+                                       ("불 켜줘?", {"power": "on"}), ("커튼 닫아 줘", {"position_pct": 0})])
+def test_supported_single_commands_still_work(text, want):
+    assert parse_command(text)[2] == want
+
+
+def test_mqtt_direct_commands_run_while_llm_waits_and_are_not_overwritten():
+    import threading as th
+    from orchestrator.server import MqttBridge
+
+    release, handled = th.Event(), []
+
+    class BlockingLlm:
+        def select(self, context, conflicts):
+            release.wait(5)
+            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="hold", reason="r")
+                                         for c in conflicts], summary="s")
+
+    orc, sent, said, _ = make(BlockingLlm())
+    bridge = MqttBridge("localhost", 1883)
+    bridge.orc = orc
+    original = orc.on_voice_command
+
+    def tracked(msg):
+        d = original(msg)
+        handled.append(msg.text)
+        if len(handled) == 2:
+            release.set()          # 두 직접 명령이 처리된 뒤에야 LLM이 돌아온다
+        return d
+    orc.on_voice_command = tracked
+    bridge.start_workers()
+    worker = th.Thread(target=orc.on_snapshot, args=(DemoHome().snapshot("t1"),))
+    worker.start()                 # t1: 청소 충돌 → LLM 대기
+    for text in ("에어컨 꺼줘", "불 꺼 줘"):
+        bridge._on_message(None, None, type("Msg", (), {"topic": "eyear/v0/room1/voice/command",
+                                                        "payload": mqtt_payload(VoiceCommand, text=text,
+                                                                                confidence=0.9)}))
+    worker.join(10)
+    bridge._stop.set()
+    assert release.is_set() and handled == ["에어컨 꺼줘", "불 꺼 줘"]      # LLM 대기 중 처리, 도착 순서 유지
+    ac = [c.params["power"] for c in sent if c.device_id == "ac_room1" and c.action == "set_power"]
+    assert ac == ["off"]           # 돌아온 자동 계획이 직접 명령(끄기)을 덮어쓰지 않음
+
+
+def test_rejected_publish_is_recorded_and_question_not_awaited():
+    home = DemoHome()
+    orc, sent, said, _ = make()
+    orc.speak = lambda room, cmd: False            # MQTT가 발행을 즉시 거절
+    orc.send_command = lambda cmd: False
+    d = orc.on_snapshot(home.snapshot("t2"))
+    assert d.speech == [] and d.undelivered and d.undelivered[0].startswith("speak room1")
+    assert orc.dialogue.episode("person_a").state == "NOT_ASKED"     # 다음 판단에서 다시 질문
+    assert all(r.reason == "PUBLISH_FAILED" for r in d.rejected if r.reason == "PUBLISH_FAILED")
+    d0 = orc.on_snapshot(modified(home.snapshot("t0"), lambda r: r.update(world_revision=500)))
+    assert d0.commands == [] and any(r.reason == "PUBLISH_FAILED" for r in d0.rejected) and not orc.pending

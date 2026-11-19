@@ -417,46 +417,50 @@ class Orchestrator:
             self.change_no += 1
             problem = command_problem(cmd.text)
             parsed = parse_command(cmd.text)
-            accepted, rejected, speech = [], [], []
+            accepted, rejected, speech, undelivered = [], [], [], []
+
+            def tell(text: str) -> None:
+                sc, ok = self._say(cmd.room_id, text, False)
+                (speech if ok else undelivered).append(sc if ok else f"speak {cmd.room_id} {sc.command_id}")
+
+            summary = "직접 명령은 자동 계획보다 우선"
             if cmd.confidence < MIN_COMMAND_CONF:
-                speech.append(self._say(cmd.room_id, "잘 못 들었어요. 다시 말씀해 주세요.", False))
-            elif problem is not None:
-                speech.append(self._say(cmd.room_id, "확실하지 않아 실행하지 않았어요. 원하시는 동작을 다시 말씀해 주세요.",
-                                        False))
+                tell("잘 못 들었어요. 다시 말씀해 주세요.")
+                summary = f"인식 신뢰도 낮음({cmd.confidence:.2f}) → 실행 안 함"
+            elif problem is not None or parsed is None:
+                # 부정, 질문, 방법을 묻는 말, 여러 동작을 담은 말: 일부만 실행하지 않는다
+                tell("확실하지 않아 실행하지 않았어요. 원하시는 동작을 한 가지씩 다시 말씀해 주세요.")
+                summary = f"{problem or 'UNSUPPORTED_SENTENCE'} → 실행 안 함"
             elif not self._snapshot_fresh():
-                speech.append(self._say(cmd.room_id, "지금은 집 상태를 확인할 수 없어 실행하지 않았어요.", False))
-                if parsed is not None:
-                    dev = next((d for d in snap.devices if d.kind == parsed[0] and d.room_id == cmd.room_id), None)
-                    if dev is not None:
-                        rejected.append(Rejected(action=ProposedAction(device_id=dev.device_id, action=parsed[1],
-                                                                       params=parsed[2], reason="DIRECT_COMMAND"),
-                                                 reason="SNAPSHOT_STALE"))
-            elif parsed is None:
-                speech.append(self._say(cmd.room_id, "죄송해요, 잘 알아듣지 못했어요.", False))
+                tell("지금은 집 상태를 확인할 수 없어 실행하지 않았어요.")
+                dev = next((d for d in snap.devices if d.kind == parsed[0] and d.room_id == cmd.room_id), None)
+                if dev is not None:
+                    rejected.append(Rejected(action=ProposedAction(device_id=dev.device_id, action=parsed[1],
+                                                                   params=parsed[2], reason="DIRECT_COMMAND"),
+                                             reason="SNAPSHOT_STALE"))
             else:
                 kind, action, params, ack = parsed
                 dev = next((d for d in snap.devices if d.kind == kind and d.room_id == cmd.room_id), None)
                 if dev is None:
-                    speech.append(self._say(cmd.room_id, "이 방에서는 그 기기를 찾지 못했어요.", False))
+                    tell("이 방에서는 그 기기를 찾지 못했어요.")
                 else:
                     a = ProposedAction(device_id=dev.device_id, action=action, params=params, reason="DIRECT_COMMAND")
                     reason = validate(a, snap)
                     if reason:
                         rejected.append(Rejected(action=a, reason=reason))
-                        speech.append(self._say(cmd.room_id, "지금은 그 동작을 할 수 없어요.", False))
+                        tell("지금은 그 동작을 할 수 없어요.")
                     else:
                         accepted.append(a)
                         self.holds[dev.device_id] = snap.as_of + MANUAL_HOLD
-                        speech.append(self._say(cmd.room_id, ack, False))
             plan_id = str(uuid.uuid4())
-            commands = self._dispatch(accepted, snap, plan_id, ["DIRECT_COMMAND"])
-            summary = "직접 명령은 자동 계획보다 우선"
-            if cmd.confidence < MIN_COMMAND_CONF:
-                summary = f"인식 신뢰도 낮음({cmd.confidence:.2f}) → 실행 안 함"
-            elif problem is not None:
-                summary = f"{problem} → 실행 안 함"
+            commands, failed = self._dispatch(accepted, snap, plan_id, ["DIRECT_COMMAND"])
+            rejected += failed
+            if commands:
+                tell(parsed[3])
+            elif failed:
+                tell("기기에 명령을 보내지 못했어요.")
             return self._record(plan_id, snap, f"voice_command:{cmd.text}", [], accepted, [], [], "none",
-                                commands, rejected, speech, summary)
+                                commands, rejected, speech, summary, undelivered)
 
     def on_device_result(self, res: DeviceResult) -> None:
         with self.lock:
@@ -618,7 +622,8 @@ class Orchestrator:
             rejected += [Rejected(action=a, reason="PAUSED") for a in valid]
             valid = []
         plan_id = str(uuid.uuid4())
-        commands = self._dispatch(valid, snap, plan_id, [trigger])
+        commands, failed = self._dispatch(valid, snap, plan_id, [trigger])
+        rejected += failed
 
         # 수면 확인 뒤의 조명·커튼 제안은 일시정지로 막혔을 때만 다시 시도하고, 그 외에는 한 번으로 끝낸다
         if not self.paused:
@@ -627,17 +632,20 @@ class Orchestrator:
                 if ep:
                     ep.consumed = True
 
-        speech = []
+        speech, undelivered = [], []
         for p in proposals:
             for q in p.questions:
                 if self.paused or self.dialogue.awaiting_in_room(q.room_id):
                     continue
                 person, node = snap.person(q.person_id), snap.node_for_room(q.room_id)
-                cmd = self._say(q.room_id, question_text(person.identity), True)
-                self.dialogue.asked(q.person_id, cmd.command_id, self.clock(), cmd.text, node.node_id)
-                speech.append(cmd)
+                cmd, ok = self._say(q.room_id, question_text(person.identity), True)
+                if ok:   # 발행이 거절되면 대답 대기로 바꾸지 않는다 (다음 판단에서 다시 질문)
+                    self.dialogue.asked(q.person_id, cmd.command_id, self.clock(), cmd.text, node.node_id)
+                    speech.append(cmd)
+                else:
+                    undelivered.append(f"speak {q.room_id} {cmd.command_id}")
         return self._record(plan_id, snap, trigger, proposals, accepted, plan.conflicts, choices, arbitration,
-                            commands, rejected, speech, " / ".join(dict.fromkeys(summaries)))
+                            commands, rejected, speech, " / ".join(dict.fromkeys(summaries)), undelivered)
 
     @staticmethod
     def _valid_selection(sel, conflicts) -> bool:
@@ -670,36 +678,42 @@ class Orchestrator:
                     and set(d.state.target_room_ids) == set(p.cmd.params.get("room_ids", [])):
                 p.status = "in_progress"
 
-    def _dispatch(self, actions, snap, plan_id: str, reasons) -> list[DeviceCommand]:
-        commands = []
+    @staticmethod
+    def _deliver(send, payload) -> bool:
+        """전송 함수를 부른다. False를 돌려주거나 예외가 나면 발행이 즉시 거절된 것으로 본다.
+        True/None = 발행 접수(MQTT 클라이언트가 받음). 기기 접수·실행은 결과 이벤트(accepted·completed)로 따로 안다."""
+        try:
+            return send(payload) is not False
+        except Exception as e:
+            log.error("전송 실패: %s", e)
+            return False
+
+    def _dispatch(self, actions, snap, plan_id: str, reasons) -> tuple[list[DeviceCommand], list[Rejected]]:
+        """(발행 접수된 명령, 발행이 즉시 거절된 동작)"""
+        commands, failed = [], []
         for a in actions:
             cmd = DeviceCommand(plan_id=plan_id, issued_at=snap.as_of, world_session_id=snap.world_session_id,
                                 based_on_revision=snap.world_revision, device_id=a.device_id, action=a.action,
                                 params=a.params, reason_codes=[a.reason] + reasons)
             self.pending[cmd.command_id] = Pending(cmd, self.clock(), occurrence_of(a))
-            commands.append(cmd)
-        for cmd in commands:
-            try:
-                self.send_command(cmd)
-            except Exception as e:
-                log.error("명령 전송 실패 %s: %s", cmd.device_id, e)
-        return commands
+            if self._deliver(self.send_command, cmd):
+                commands.append(cmd)
+            else:
+                self.pending.pop(cmd.command_id, None)
+                failed.append(Rejected(action=a, reason="PUBLISH_FAILED"))
+        return commands, failed
 
-    def _say(self, room_id: str, text: str, expect_reply: bool) -> SpeakCommand:
+    def _say(self, room_id: str, text: str, expect_reply: bool) -> tuple[SpeakCommand, bool]:
         cmd = SpeakCommand(timestamp=self.snap.as_of, text=text, expect_reply=expect_reply,
                            listen_seconds=LISTEN_SECONDS)
-        try:
-            self.speak(room_id, cmd)
-        except Exception as e:
-            log.error("음성 전송 실패 %s: %s", room_id, e)
-        return cmd
+        return cmd, self._deliver(lambda c: self.speak(room_id, c), cmd)
 
     def _record(self, plan_id, snap, trigger, proposals, accepted, conflicts, choices, arbitration,
-                commands, rejected, speech, summary) -> Decision:
+                commands, rejected, speech, summary, undelivered=()) -> Decision:
         d = Decision(plan_id=plan_id, world_session_id=snap.world_session_id, world_revision=snap.world_revision,
                      decided_at=snap.as_of, trigger=trigger, proposals=proposals, accepted=accepted,
                      conflicts=conflicts, choices=choices, arbitration=arbitration, commands=commands,
-                     rejected=rejected, speech=speech, summary=summary)
+                     rejected=rejected, speech=speech, summary=summary, undelivered=list(undelivered))
         self.decisions.append(d)
         if self.trace_path:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
