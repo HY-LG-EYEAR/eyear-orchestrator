@@ -655,14 +655,107 @@ def test_mqtt_direct_commands_run_while_llm_waits_and_are_not_overwritten():
     assert ac == ["off"]           # 돌아온 자동 계획이 직접 명령(끄기)을 덮어쓰지 않음
 
 
+def later(snap, rev_add, seconds):
+    return modified(snap, lambda r: (r.update(world_revision=r["world_revision"] + rev_add),
+                                     r.update(as_of=(snap.as_of + timedelta(seconds=seconds)).isoformat())))
+
+
 def test_rejected_publish_is_recorded_and_question_not_awaited():
-    home = DemoHome()
     orc, sent, said, _ = make()
     orc.speak = lambda room, cmd: False            # MQTT가 발행을 즉시 거절
     orc.send_command = lambda cmd: False
-    d = orc.on_snapshot(home.snapshot("t2"))
+    d = orc.on_snapshot(DemoHome().snapshot("t2"))
     assert d.speech == [] and d.undelivered and d.undelivered[0].startswith("speak room1")
-    assert orc.dialogue.episode("person_a").state == "NOT_ASKED"     # 다음 판단에서 다시 질문
-    assert all(r.reason == "PUBLISH_FAILED" for r in d.rejected if r.reason == "PUBLISH_FAILED")
-    d0 = orc.on_snapshot(modified(home.snapshot("t0"), lambda r: r.update(world_revision=500)))
-    assert d0.commands == [] and any(r.reason == "PUBLISH_FAILED" for r in d0.rejected) and not orc.pending
+    assert orc.dialogue.episode("person_a").state == "NOT_ASKED"
+    assert d.commands == [] and any(r.reason == "PUBLISH_FAILED" for r in d.rejected) and not orc.pending
+
+
+# ---------- 5차 점검: 발행이 거절된 뒤 남는 상태 ----------
+
+def test_refused_direct_command_does_not_leave_a_hold():
+    orc, sent, _, _ = make()
+    orc.on_snapshot(DemoHome().snapshot("t4"))
+    orc.send_command = lambda cmd: False
+    d = orc.on_voice_command(VoiceCommand(node_id="node_room1", room_id="room1", text="에어컨 꺼줘", confidence=0.9))
+    assert d.commands == [] and "ac_room1" not in orc.holds and "보내지 못했어요" in d.speech[-1].text
+
+
+def test_partly_refused_sleep_actions_retry_only_the_failed_one():
+    home = DemoHome()
+    orc, sent, said, _ = make()
+    s2 = home.snapshot("t2")
+    orc.on_snapshot(s2)
+    q = said[-1][1]
+    orc.send_command = lambda c: False if c.device_id == "curtain_room1" else sent.append(c)
+    d = orc.on_voice_reply(VoiceReply(node_id="node_room1", room_id="room1", command_id=q.command_id, text="응",
+                                      confidence=0.9, no_response=False))
+    assert [c.device_id for c in d.commands] == ["light_room1"]
+    assert orc.dialogue.episode("person_a").consumed is False
+    orc.send_command = sent.append
+    n = len(sent)
+    orc.on_snapshot(later(s2, 1, 11))           # 재시도 간격(10초) 뒤 다음 스냅샷
+    assert [c.device_id for c in sent[n:] if c.device_id in ("light_room1", "curtain_room1")] == ["curtain_room1"]
+    assert orc.dialogue.episode("person_a").consumed is True
+
+
+def test_refused_question_is_asked_again_then_given_up():
+    orc, sent, said, _ = make()
+    orc.speak = lambda r, c: False
+    s2 = DemoHome().snapshot("t2")
+    orc.on_snapshot(s2)
+    orc.on_snapshot(later(s2, 1, 1))            # 같은 상태, revision만 증가 → 다시 시도
+    orc.on_snapshot(later(s2, 2, 2))
+    assert orc.dialogue.episode("person_a").ask_failures == 3
+    assert orc.dialogue.episode("person_a").state == "EXPIRED"      # 3번 거절되면 이번 휴식에는 더 묻지 않음
+    orc.speak = lambda r, c: said.append((r, c))
+    orc.on_snapshot(later(s2, 3, 3))
+    assert said == []
+
+    orc2, _, said2, _ = make()
+    orc2.speak = lambda r, c: False
+    orc2.on_snapshot(s2)
+    orc2.speak = lambda r, c: said2.append((r, c))
+    d = orc2.on_snapshot(later(s2, 1, 1))
+    assert d.speech and orc2.dialogue.episode("person_a").state == "AWAITING_REPLY"
+
+
+def test_mqtt_reply_worker_waiting_for_llm_does_not_delay_direct_command():
+    import threading as th
+    from orchestrator.server import MqttBridge
+
+    entered, release, order = th.Event(), th.Event(), []
+
+    class BlockingLlm:
+        def select(self, context, conflicts):
+            entered.set()
+            release.wait(5)
+            order.append("llm returned")
+            return LlmSelection(choices=[Choice(conflict_id=c.conflict_id, option_id="hold", reason="r")
+                                         for c in conflicts], summary="s")
+
+    orc, sent, said, _ = make()
+    orc.on_snapshot(DemoHome().snapshot("t2"))          # 질문 발행 (LLM 없이 fallback)
+    q = said[-1][1]
+    orc.llm, orc.memo = BlockingLlm(), {}               # 대답 판단에서 LLM을 부르게 함
+    original = orc.on_voice_command
+
+    def tracked(msg):
+        d = original(msg)
+        order.append("command")
+        release.set()
+        return d
+    orc.on_voice_command = tracked
+    bridge = MqttBridge("localhost", 1883)
+    bridge.orc = orc
+    bridge.start_workers()
+    reply = mqtt_payload(VoiceReply, command_id=q.command_id, text="응", confidence=0.9, no_response=False)
+    bridge._on_message(None, None, type("Msg", (), {"topic": "eyear/v0/room1/voice/reply", "payload": reply}))
+    assert entered.wait(5)                               # 대답 워커가 실제로 LLM 안에 들어감
+    cmd = mqtt_payload(VoiceCommand, text="에어컨 꺼줘", confidence=0.9)
+    bridge._on_message(None, None, type("Msg", (), {"topic": "eyear/v0/room1/voice/command", "payload": cmd}))
+    for _ in range(50):
+        if "llm returned" in order:
+            break
+        th.Event().wait(0.1)
+    bridge._stop.set()
+    assert order[:2] == ["command", "llm returned"]

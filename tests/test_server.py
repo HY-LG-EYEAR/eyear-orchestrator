@@ -68,3 +68,25 @@ def test_decision_is_recorded_and_question_asked():
         assert {(x["device_id"], x["action"]) for x in last["commands"]} >= {("light_room1", "set_power"),
                                                                              ("curtain_room1", "set_curtain_position")}
         assert c.get("/v1/schemas").status_code == 200
+
+
+def test_speech_list_marks_refused_publish():
+    class RefusingBridge:
+        def start(self, orc):
+            pass
+
+        def stop(self):
+            pass
+
+        def speak(self, room_id, cmd):
+            return False
+
+        def send_command(self, cmd):
+            return False
+
+    with TestClient(create_app(Settings(trace_path=""), bridge=RefusingBridge())) as c:
+        register(c)
+        c.post("/v2/world/snapshots", json=RAW)
+        speech = c.get("/v1/speech").json()
+        assert speech and speech[-1]["delivered"] is False
+        assert c.get("/v1/decisions").json()[-1]["undelivered"]

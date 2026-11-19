@@ -145,7 +145,7 @@ def create_app(settings: Settings | None = None, orchestrator: Orchestrator | No
                bridge: MqttBridge | None = None) -> FastAPI:
     settings = settings or Settings.load()
     app = FastAPI(title="EYEAR Orchestrator", version="0.1.0")
-    spoken: list[tuple[str, SpeakCommand]] = []
+    spoken: list[tuple[str, SpeakCommand, bool]] = []
 
     if orchestrator is None:
         if bridge is None and settings.mqtt_host:
@@ -162,8 +162,9 @@ def create_app(settings: Settings | None = None, orchestrator: Orchestrator | No
             return True
 
         def speak(room_id: str, cmd: SpeakCommand) -> bool:
-            spoken.append((room_id, cmd))
-            return bridge.speak(room_id, cmd) if bridge else True
+            ok = bridge.speak(room_id, cmd) if bridge else True
+            spoken.append((room_id, cmd, ok))
+            return ok
 
         trace = Path(settings.trace_path) if settings.trace_path else None
         if trace is not None and not trace.is_absolute():
@@ -269,7 +270,8 @@ def create_app(settings: Settings | None = None, orchestrator: Orchestrator | No
 
     @app.get("/v1/speech")
     def speech(limit: int = 20):
-        return [{"room_id": r, **c.model_dump(mode="json")} for r, c in spoken[-limit:]]
+        """보낸 음성. delivered=false는 발행이 즉시 거절된 것(판단 기록의 undelivered와 같음)."""
+        return [{"room_id": r, "delivered": ok, **c.model_dump(mode="json")} for r, c, ok in spoken[-limit:]]
 
     @app.get("/v1/schemas")
     def schemas():

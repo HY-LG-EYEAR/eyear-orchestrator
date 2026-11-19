@@ -69,6 +69,8 @@ class Episode:
     answer: str | None = None         # yes | no | ambiguous
     consumed: bool = False            # 긍정 대답에 따른 조명·커튼 제안을 중앙이 처리했는가
     node_id: str | None = None        # 질문을 보낸 Node. 대답은 이 Node·방에서 온 것만 받는다
+    ask_failures: int = 0             # 질문 발행이 거절된 횟수
+    publish_retries: int = 0          # 긍정 대답 뒤 조명·커튼 발행이 일부 거절돼 다시 시도한 횟수
 
 
 class DialogueManager:

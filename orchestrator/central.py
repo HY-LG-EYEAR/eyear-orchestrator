@@ -50,6 +50,8 @@ IDEMPOTENT_ACTIONS = {"set_mode", "set_power", "set_target_temperature", "set_ai
 TRANSIENT_FAILURES = {"busy", "timeout", "temporarily_unavailable"}   # 다시 시도해도 되는 실패 이유
 MAX_RETRIES = 2
 RETRY_INTERVAL = timedelta(minutes=5)
+MAX_PUBLISH_RETRIES = 3                       # 발행이 즉시 거절된 자동 동작·질문의 재시도 한도
+PUBLISH_RETRY_INTERVAL = timedelta(seconds=10)
 
 
 def occurrence_of(a: ProposedAction) -> str | None:
@@ -451,10 +453,11 @@ class Orchestrator:
                         tell("지금은 그 동작을 할 수 없어요.")
                     else:
                         accepted.append(a)
-                        self.holds[dev.device_id] = snap.as_of + MANUAL_HOLD
             plan_id = str(uuid.uuid4())
             commands, failed = self._dispatch(accepted, snap, plan_id, ["DIRECT_COMMAND"])
             rejected += failed
+            for c in commands:   # 잠금은 발행이 접수된 명령에만 건다
+                self.holds[c.device_id] = snap.as_of + MANUAL_HOLD
             if commands:
                 tell(parsed[3])
             elif failed:
@@ -624,12 +627,23 @@ class Orchestrator:
         plan_id = str(uuid.uuid4())
         commands, failed = self._dispatch(valid, snap, plan_id, [trigger])
         rejected += failed
+        # 발행이 거절된 자동 동작은 짧은 간격으로 몇 번만 다시 시도한다 (같은 판단 키여도 재시도 시각이 지나면 다시 판단)
+        for r in failed:
+            key = action_key(r.action.device_id, r.action.action, r.action.params, occurrence_of(r.action))
+            count = self.failures.get(key, (0, None))[0] + 1
+            self.failures[key] = (count, snap.as_of + PUBLISH_RETRY_INTERVAL if count <= MAX_PUBLISH_RETRIES else None)
 
-        # 수면 확인 뒤의 조명·커튼 제안은 일시정지로 막혔을 때만 다시 시도하고, 그 외에는 한 번으로 끝낸다
+        # 수면 확인 뒤의 조명·커튼 제안: 일시정지로 막혔거나 일부 발행이 거절되면(재시도 한도 안) 끝내지 않는다.
+        # 다음 판단에서 이미 처리된 동작은 상태 확인·중복 검사로 빠지고, 실패한 동작만 다시 나간다.
         if not self.paused:
             for pid in plan.sleep_people:
                 ep = self.dialogue.episode(pid)
-                if ep:
+                if ep is None:
+                    continue
+                if any(r.action.reason == f"SLEEP_CONFIRMED:{pid}" for r in failed) \
+                        and ep.publish_retries < MAX_PUBLISH_RETRIES:
+                    ep.publish_retries += 1
+                else:
                     ep.consumed = True
 
         speech, undelivered = [], []
@@ -638,12 +652,18 @@ class Orchestrator:
                 if self.paused or self.dialogue.awaiting_in_room(q.room_id):
                     continue
                 person, node = snap.person(q.person_id), snap.node_for_room(q.room_id)
+                ep = self.dialogue.episode(q.person_id)
                 cmd, ok = self._say(q.room_id, question_text(person.identity), True)
-                if ok:   # 발행이 거절되면 대답 대기로 바꾸지 않는다 (다음 판단에서 다시 질문)
+                if ok:   # 발행이 거절되면 대답 대기로 바꾸지 않는다
                     self.dialogue.asked(q.person_id, cmd.command_id, self.clock(), cmd.text, node.node_id)
                     speech.append(cmd)
                 else:
                     undelivered.append(f"speak {q.room_id} {cmd.command_id}")
+                    ep.ask_failures += 1
+                    if ep.ask_failures >= MAX_PUBLISH_RETRIES:   # 계속 거절되면 이번 휴식에는 더 묻지 않는다
+                        ep.state = "EXPIRED"
+                    else:
+                        self.last_key = None                       # 다음 스냅샷에서 다시 판단해 질문
         return self._record(plan_id, snap, trigger, proposals, accepted, plan.conflicts, choices, arbitration,
                             commands, rejected, speech, " / ".join(dict.fromkeys(summaries)), undelivered)
 
