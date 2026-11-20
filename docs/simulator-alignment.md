@@ -10,7 +10,8 @@
 | World Model → 중앙 | `POST /v2/world/sessions` | 시작할 때 한 번. 시나리오 재생은 `clock_mode: "replay"` (과거 시각이라 `live`면 거부됨) |
 | World Model → 중앙 | `POST /v2/world/snapshots` | WorldSnapshot 2.0 전체. 의미 있는 변화마다 + 변화가 없어도 30초마다. 응답은 202뿐이고 판단 결과는 응답에 없음 |
 | 중앙 → 기기(시뮬레이터) | MQTT `eyear/v0/device/{device_id}/command` | 아래 DeviceCommand |
-| 기기(시뮬레이터) → 중앙 | `POST /v2/world/device-results` | 아래 DeviceResult |
+| 기기(시뮬레이터) → World Model | MQTT `eyear/v0/device/{device_id}/state`, `.../result` | 기기 상태(주기 보고)와 명령 실행 결과. 형식은 World Model 입력 형식(`ingest_device_result`: `state` 필드) |
+| World Model → 중앙 | `POST /v2/world/device-results` | 결과를 상관 ID와 함께 전달. 아래 DeviceResult (`observed_state` 필드) |
 | 화면 표시 | `GET /v1/decisions` | 판단 기록 (충돌, 선택지, LLM/규칙 여부, 명령, 보류 이유) |
 
 ## 2. 스냅샷 안의 청소기와 루틴
@@ -23,7 +24,7 @@
 - `state.status`: `cleaning` | `returning` | `docked` (그 밖의 값은 시나리오에서 안 씀)
 - `state.target_room_ids`: **남은 방, 순서대로. 첫 번째가 지금 청소 중이거나 다음에 갈 방.** 끝낸 방은 목록에서 뺀다.
 - `state.mode`: `"normal"`. `capabilities.actions`에 `start_cleaning`, `return_to_dock` 포함, `capabilities.modes: ["normal"]`.
-- `online: true`, `evidence.freshness: "current"`. 기기 상태는 World Model의 10초 TTL 안에 주기적으로 보고해야 한다(오래되면 중앙이 그 기기에 명령하지 않음).
+- `online: true`, `evidence.freshness: "current"`. 시뮬레이터는 기기 상태를 MQTT `.../state`로 World Model의 10초 TTL 안에 주기적으로 보고해야 한다(오래되면 중앙이 그 기기에 명령하지 않음).
 
 **방 재실**: 청소기는 `occupancy.state == "EMPTY"`이고 근거가 `current`인 방에만 들어간다. `OCCUPIED`, `UNKNOWN`, 오래된 `EMPTY`는 모두 "비지 않음"으로 보고 기다린다.
 
@@ -68,9 +69,11 @@ MQTT `eyear/v0/device/{device_id}/command`, JSON:
 | 조명 | `TURN_ON` / `TURN_OFF` | `set_power` | `{"power": "on"}` / `{"power": "off"}` |
 | 커튼 | `OPEN` / `CLOSE` | `set_curtain_position` | `{"position_pct": 100}` / `{"position_pct": 0}` |
 
-## 5. 결과 (기기 → 중앙)
+## 5. 결과 (기기 → World Model → 중앙)
 
-`POST /v2/world/device-results`, JSON:
+경로는 팀 연결도(eyear-team `docs/connections.html` ⑥·⑦)를 따른다. 시뮬레이터는 MQTT `eyear/v0/device/{device_id}/result`로 World Model에 보내고, World Model이 기기 상태를 갱신한 뒤 세션·revision을 붙여 중앙에 HTTP로 전달한다. 시뮬레이터가 중앙에 직접 보내지 않는다.
+
+World Model → 중앙 `POST /v2/world/device-results`, JSON:
 
 ```json
 {"world_session_id": "...", "world_revision": 118, "event_id": "uuid", "command_id": "명령의 command_id",
